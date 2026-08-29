@@ -7,6 +7,33 @@ import test from 'node:test'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const read = (path) => readFileSync(resolve(root, path), 'utf8')
 
+const multilinePwshBlocks = (source) => {
+  const lines = source.split('\n')
+  const blocks = []
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (
+      lines[index].trim() !== 'shell: pwsh' ||
+      lines[index + 1].trim() !== 'run: |'
+    ) {
+      continue
+    }
+    const name = lines
+      .slice(Math.max(0, index - 3), index)
+      .reverse()
+      .map((line) => line.match(/^\s*- name:\s*(.+)$/)?.[1])
+      .find(Boolean) ?? 'unnamed pwsh step'
+    const body = []
+    for (let lineIndex = index + 2; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]
+      const indentation = line.match(/^ */)[0].length
+      if (line.trim() && indentation <= 8) break
+      body.push(line.startsWith('          ') ? line.slice(10) : line)
+    }
+    blocks.push({ name, statements: body.filter((line) => line.trim()) })
+  }
+  return blocks.filter(({ statements }) => statements.length > 1)
+}
+
 test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () => {
   const models = read('web-app/src/constants/yorebot-models.ts')
   const backends = read('extensions/llamacpp-upstream-extension/src/backend.ts')
@@ -137,4 +164,23 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
     existsSync(resolve(root, '.github/workflows/windows-pinned-model-smoke.yml')),
     false
   )
+})
+
+test('every multi-command PowerShell workflow step fails fast', () => {
+  const blocks = multilinePwshBlocks(
+    read('.github/workflows/windows-internal.yml')
+  )
+  assert.ok(blocks.length > 0)
+  for (const { name, statements } of blocks) {
+    assert.equal(
+      statements[0].trim(),
+      "$ErrorActionPreference = 'Stop'",
+      `${name} must set terminating PowerShell errors first`
+    )
+    assert.equal(
+      statements[1].trim(),
+      '$PSNativeCommandUseErrorActionPreference = $true',
+      `${name} must fail on native command errors before doing work`
+    )
+  }
 })
