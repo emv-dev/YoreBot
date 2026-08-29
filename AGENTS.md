@@ -309,6 +309,24 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Prove the pinned Downloads Agent flow manually
+- **Context:** The existing heavy smoke proved only one plain model response;
+  issue #1 also needs evidence that the shipped model, runtime, skill, catalog,
+  approvals, disk effects, denial, and undo work together.
+- **Decision:** Keep the 5.68 GB ritual manual-only. After verifying the exact
+  product pins and blocking outbound access for the exact server, run one
+  loopback CPU session through inventory/proposal, explicit acceptance,
+  one-time approvals, summary, and undo; run a separate denial fixture and
+  compare complete disk snapshots.
+- **Consequences:** Pull requests retain lightweight static and compile gates.
+  A dispatched run gives pass/fail end-to-end evidence for the bounded
+  Downloads task without making speed, GUI, or broader Agent claims.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`src-tauri/src/core/agent/model_e2e.rs`](src-tauri/src/core/agent/model_e2e.rs),
+  [`scripts/test-windows-pinned-model.ps1`](scripts/test-windows-pinned-model.ps1),
+  [`.github/workflows/windows-internal.yml`](.github/workflows/windows-internal.yml).
+
 ### 2026-08-28 — Separate lightweight Windows package smoke from pinned-model smoke
 - **Context:** Issue #1 needs clean-install proof on every Windows change, while
   downloading and loading the 5.68 GB ordinary-laptop model is too heavy for

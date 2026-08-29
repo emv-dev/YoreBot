@@ -268,17 +268,11 @@ jobs:
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
 
-  pinned-model-smoke:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify pinned model on pinned CPU runtime
+      - name: Verify Downloads Agent on pinned model and CPU runtime
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot
+          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot -RunDownloadsAgentAcceptance
