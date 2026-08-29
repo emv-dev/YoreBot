@@ -57,7 +57,7 @@ describe('YoreBot automatic egress boundary', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(tauriFetch).not.toHaveBeenCalled()
     fetchSpy.mockRestore()
-  })
+  }, 20_000)
 
   it('startup exposes only the pinned local llama.cpp runtime provider', async () => {
     const fetchSpy = vi

@@ -108,6 +108,9 @@ test('Windows runs the generated-content and startup zero-egress regressions', (
   const app = read('src-tauri/src/lib.rs')
   const html = read('web-app/src/containers/HtmlArtifact.tsx')
   const markdown = read('web-app/src/containers/RenderMarkdown.tsx')
+  const autoEgress = read(
+    'web-app/src/services/__tests__/yorebot-auto-egress.test.ts'
+  )
 
   for (const suite of [
     'RenderMarkdown.security.test.tsx',
@@ -124,6 +127,10 @@ test('Windows runs the generated-content and startup zero-egress regressions', (
   assert.doesNotMatch(html, /<iframe|set_artifact_html|allow-popups|allow-forms/)
   assert.doesNotMatch(markdown, /@streamdown\/mermaid/)
   assert.match(markdown, /data-blocked-markdown-image/)
+  assert.match(
+    autoEgress,
+    /imports the production route tree[\s\S]*?\}, 20_000\)/
+  )
 })
 
 test('disabled public updater is not registered during desktop startup', () => {
