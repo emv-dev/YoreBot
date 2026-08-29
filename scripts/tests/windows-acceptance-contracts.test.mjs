@@ -119,8 +119,10 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   assert.match(internal, /test-windows-pinned-model\.ps1 -ValidateManifestOnly/)
   assert.match(
     internal,
-    /tauri-plugin-llamacpp-upstream\/Cargo\.toml test_parse_binary_version/
+    /tauri-plugin-llamacpp-upstream\/Cargo\.toml binary_version/
   )
+  assert.match(internal, /Pinned runtime --version output/)
+  assert.match(internal, /versionExitCode -ne 0/)
   assert.ok(installerUpload >= 0 && installerUpload < installerSmoke)
   assert.match(internal.slice(installerUpload, installerSmoke), /if: always\(\)/)
   assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)

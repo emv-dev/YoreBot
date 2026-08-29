@@ -169,8 +169,23 @@ jobs:
           }
           "b10431" | Set-Content (Join-Path $runtime "version.txt")
           "win-cpu-x64" | Set-Content (Join-Path $runtime "backend.txt")
-          if (-not (Test-Path (Join-Path $runtime "build/bin/llama-server.exe"))) {
+          $serverPath = Join-Path $runtime "build/bin/llama-server.exe"
+          if (-not (Test-Path $serverPath)) {
             throw "Pinned runtime did not contain llama-server.exe"
+          }
+          Push-Location (Split-Path $serverPath)
+          try {
+            $versionOutput = (& ".\llama-server.exe" --version 2>&1 | Out-String).Trim()
+            $versionExitCode = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          Write-Host "Pinned runtime --version output: $versionOutput"
+          if ($versionExitCode -ne 0) {
+            throw "Pinned runtime --version exited $versionExitCode"
+          }
+          if ($versionOutput -notmatch '(?m)(?:version:\s+b?10431(?:-|\s)|\(build\s+10431,)') {
+            throw "Pinned runtime did not report build 10431"
           }
 
       - name: Build existing components
@@ -193,7 +208,7 @@ jobs:
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
           yarn build:web
-          cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml test_parse_binary_version
+          cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
