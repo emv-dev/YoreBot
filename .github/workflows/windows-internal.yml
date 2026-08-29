@@ -53,6 +53,7 @@ jobs:
               throw "PowerShell syntax errors in $script"
             }
           }
+          ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly
 
       - name: Install dependencies
         shell: pwsh

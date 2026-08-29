@@ -2,15 +2,15 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [string] $WorkRoot
+    [string] $WorkRoot = '',
+
+    [switch] $ValidateManifestOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path $PSScriptRoot
-$workRootFull = [System.IO.Path]::GetFullPath($WorkRoot)
 $modelManifestPath = Join-Path $projectRoot 'web-app/src/constants/yorebot-models.ts'
 $backendManifestPath = Join-Path $projectRoot 'extensions/llamacpp-upstream-extension/src/backend.ts'
 $firewallRuleName = "YoreBot pinned model smoke $([guid]::NewGuid())"
@@ -70,7 +70,7 @@ $modelUrl = "https://huggingface.co/$($model.Repository)/resolve/$($model.Revisi
 $backendSource = Get-Content $backendManifestPath -Raw
 $backendMatch = [regex]::Match(
     $backendSource,
-    "(?s)\{\s*version:\s*'b10431',\s*backend:\s*'win-cpu-x64',(?<body>.*?)\}"
+    "(?ms)^[ \t]*\{[ \t]*\r?\n[ \t]*version:\s*'b10431',\s*backend:\s*'win-cpu-x64',(?<body>.*?^[ \t]*sha256:\s*'[0-9a-f]{64}',[ \t]*\r?\n)[ \t]*\},[ \t]*$"
 )
 if (-not $backendMatch.Success) { throw 'Pinned b10431 CPU backend is missing from source manifest' }
 $backendBlock = $backendMatch.Groups['body'].Value
@@ -90,7 +90,15 @@ if ($model.Repository -ne 'unsloth/Qwen3.5-9B-GGUF' -or
 if ($backend.Filename -ne 'llama-b10431-bin-win-cpu-x64.zip') {
     throw 'The Windows CPU source pin changed; review this acceptance ritual explicitly'
 }
+if ($ValidateManifestOnly) {
+    Write-Host 'Pinned model and runtime manifests parsed successfully.'
+    return
+}
+if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
+    throw 'WorkRoot is required unless ValidateManifestOnly is set'
+}
 
+$workRootFull = [System.IO.Path]::GetFullPath($WorkRoot)
 if (Test-Path -LiteralPath $workRootFull) {
     throw "Acceptance root must be fresh: $workRootFull"
 }
