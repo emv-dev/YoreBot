@@ -407,8 +407,9 @@ async fn forget_with(
     config: Option<&AccessConfig>,
     vault: &dyn LicenseVault,
 ) -> Result<YoreBotAccessStatus, AccessFailure> {
-    entitlements.lock().await.set_verified_subscription(false);
+    let mut entitlements = entitlements.lock().await;
     vault.delete()?;
+    entitlements.set_verified_subscription(false);
     Ok(status_for(config, false, false))
 }
 
@@ -726,6 +727,7 @@ mod tests {
     struct FakeVault {
         value: StdMutex<Option<String>>,
         fail_save: bool,
+        fail_delete: bool,
     }
 
     impl FakeVault {
@@ -733,6 +735,7 @@ mod tests {
             Self {
                 value: StdMutex::new(Some(value.into())),
                 fail_save: false,
+                fail_delete: false,
             }
         }
     }
@@ -751,6 +754,9 @@ mod tests {
         }
 
         fn delete(&self) -> Result<(), AccessFailure> {
+            if self.fail_delete {
+                return Err(AccessFailure::SecureStorageUnavailable);
+            }
             *self.value.lock().unwrap() = None;
             Ok(())
         }
@@ -864,6 +870,7 @@ mod tests {
         let vault = FakeVault {
             value: StdMutex::new(Some("OLD-LICENSE-123".into())),
             fail_save: true,
+            fail_delete: false,
         };
 
         assert_eq!(
@@ -923,6 +930,24 @@ mod tests {
         assert!(!status.has_saved_key);
         assert_eq!(vault.load().unwrap(), None);
         assert!(!entitlements.lock().await.has_verified_subscription());
+    }
+
+    #[tokio::test]
+    async fn failed_forget_preserves_saved_and_process_access() {
+        let entitlements = entitlements();
+        entitlements.lock().await.set_verified_subscription(true);
+        let vault = FakeVault {
+            value: StdMutex::new(Some("SAVED-LICENSE-123".into())),
+            fail_save: false,
+            fail_delete: true,
+        };
+
+        assert_eq!(
+            forget_with(&entitlements, Some(&config()), &vault).await,
+            Err(AccessFailure::SecureStorageUnavailable)
+        );
+        assert_eq!(vault.load().unwrap().as_deref(), Some("SAVED-LICENSE-123"));
+        assert!(entitlements.lock().await.has_verified_subscription());
     }
 
     #[tokio::test]
