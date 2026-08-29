@@ -260,12 +260,91 @@ fn backend_executable_path(backend_dir: &PathBuf) -> PathBuf {
 }
 
 fn parse_binary_version(output: &str) -> Option<u32> {
-    output.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("version:")
-            .and_then(|value| value.split_whitespace().next())
-            .and_then(|value| value.parse::<u32>().ok())
+    fn parse_number(value: &str) -> Option<u32> {
+        let value = value.trim_start();
+        let value = value.strip_prefix('b').unwrap_or(value);
+        let digits = value
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>();
+        let separator = value[digits.len()..].chars().next();
+        if digits.is_empty()
+            || !matches!(separator, None | Some('-')) && !separator.is_some_and(char::is_whitespace)
+        {
+            None
+        } else {
+            digits.parse::<u32>().ok()
+        }
+    }
+
+    for line in output.lines() {
+        if let Some((_, value)) = line.split_once("version:") {
+            if let Some(version) = parse_number(value) {
+                return Some(version);
+            }
+        }
+        if let Some((_, value)) = line.split_once("(build ") {
+            let value = value.split(',').next().unwrap_or(value);
+            if let Some(version) = parse_number(value) {
+                return Some(version);
+            }
+        }
+    }
+    None
+}
+
+#[derive(Debug)]
+struct BinaryVersionInspection {
+    success: bool,
+    exit_code: Option<i32>,
+    parsed_version: Option<u32>,
+    output: String,
+}
+
+fn inspect_backend_binary_version(
+    backend_dir: &PathBuf,
+) -> Result<BinaryVersionInspection, String> {
+    let executable = backend_executable_path(backend_dir);
+    let mut command = Command::new(&executable);
+    command.arg("--version");
+    if let Some(parent) = executable.parent() {
+        command.current_dir(parent);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = command.output().map_err(|error| {
+        format!(
+            "failed to inspect bundled backend version for {}: {}",
+            backend_dir.display(),
+            error
+        )
+    })?;
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(BinaryVersionInspection {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        parsed_version: parse_binary_version(&combined),
+        output: combined,
     })
+}
+
+fn bounded_binary_version_output(output: &str) -> String {
+    const LIMIT: usize = 512;
+    let mut escaped = output.chars().flat_map(char::escape_debug);
+    let bounded = escaped.by_ref().take(LIMIT).collect::<String>();
+    if escaped.next().is_some() {
+        format!("{}…", bounded)
+    } else {
+        bounded
+    }
 }
 
 fn backend_binary_matches_version(backend_dir: &PathBuf, expected_version: &str) -> bool {
@@ -274,31 +353,26 @@ fn backend_binary_matches_version(backend_dir: &PathBuf, expected_version: &str)
         return true;
     }
 
-    let mut command = Command::new(backend_executable_path(backend_dir));
-    command.arg("--version");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-
-    let output = match command.output() {
-        Ok(output) => output,
+    let inspection = match inspect_backend_binary_version(backend_dir) {
+        Ok(inspection) => inspection,
         Err(error) => {
-            log::warn!(
-                "Failed to inspect bundled backend version for {}: {}",
-                backend_dir.display(),
-                error
-            );
+            log::warn!("{}", error);
             return false;
         }
     };
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    parse_binary_version(&combined) == Some(expected)
+    let matches = inspection.success && inspection.parsed_version == Some(expected);
+    if !matches {
+        log::warn!(
+            "Bundled backend version check failed for {}: success={}, exit_code={:?}, parsed={:?}, expected={}, output=\"{}\"",
+            backend_dir.display(),
+            inspection.success,
+            inspection.exit_code,
+            inspection.parsed_version,
+            expected,
+            bounded_binary_version_output(&inspection.output)
+        );
+    }
+    matches
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1930,6 +2004,18 @@ mod tests {
     #[test]
     fn test_parse_binary_version() {
         assert_eq!(
+            parse_binary_version(
+                "\nversion: 0.1.0-dev (build 10431, commit 1692f9e50)\r\nbuilt with Clang 20.1.8 for Windows x86_64\r\n"
+            ),
+            Some(10431)
+        );
+        assert_eq!(
+            parse_binary_version(
+                "version: b10431-1692f9e (build 10431, commit 1692f9e)\nbuilt with MSVC"
+            ),
+            Some(10431)
+        );
+        assert_eq!(
             parse_binary_version("version: 9937 (2021515a1)\nbuilt with AppleClang"),
             Some(9937)
         );
@@ -1938,6 +2024,35 @@ mod tests {
             Some(9222)
         );
         assert_eq!(parse_binary_version("unknown version"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_pinned_windows_resource_binary_version_matches() {
+        let resource_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../resources/llamacpp-backend-upstream");
+        assert!(
+            backend_executable_path(&resource_dir).is_file(),
+            "pinned Windows resource is missing"
+        );
+        let inspection = inspect_backend_binary_version(&resource_dir)
+            .expect("pinned Windows resource version command failed to start");
+        assert!(
+            inspection.success,
+            "pinned Windows resource version command exited {:?}: {}",
+            inspection.exit_code,
+            bounded_binary_version_output(&inspection.output)
+        );
+        assert_eq!(
+            inspection.parsed_version,
+            Some(10431),
+            "unexpected pinned Windows resource version output: {}",
+            bounded_binary_version_output(&inspection.output)
+        );
+        assert!(
+            backend_binary_matches_version(&resource_dir, "b10431"),
+            "pinned Windows resource does not report b10431"
+        );
     }
 
     #[test]

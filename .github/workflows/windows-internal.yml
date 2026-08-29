@@ -30,8 +30,34 @@ jobs:
       - name: Enable Yarn
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           corepack enable
           corepack prepare yarn@4.5.3 --activate
+
+      - name: Test Windows acceptance contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node --test scripts/tests/windows-acceptance-contracts.test.mjs
+          foreach ($script in @(
+            "scripts/test-windows-installer.ps1",
+            "scripts/test-windows-pinned-model.ps1"
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref] $tokens,
+              [ref] $parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_ }
+              throw "PowerShell syntax errors in $script"
+            }
+          }
+          ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly
 
       - name: Install dependencies
         shell: pwsh
@@ -44,6 +70,8 @@ jobs:
       - name: Install extension dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           Push-Location extensions
           # core/package.tgz is generated per platform, so Yarn must refresh
           # its local-file checksum in this ephemeral checkout.
@@ -59,6 +87,8 @@ jobs:
       - name: Verify Windows safety contracts
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $trayFiles = @(
             ".cargo/config.toml",
             "src-tauri/src/lib.rs",
@@ -127,6 +157,8 @@ jobs:
       - name: Verify pinned CPU runtime archive
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $url = "https://github.com/ggml-org/llama.cpp/releases/download/b10431/llama-b10431-bin-win-cpu-x64.zip"
           $archive = Join-Path $env:RUNNER_TEMP "llama-b10431-bin-win-cpu-x64.zip"
           Invoke-WebRequest -Uri $url -OutFile $archive
@@ -147,13 +179,30 @@ jobs:
           }
           "b10431" | Set-Content (Join-Path $runtime "version.txt")
           "win-cpu-x64" | Set-Content (Join-Path $runtime "backend.txt")
-          if (-not (Test-Path (Join-Path $runtime "build/bin/llama-server.exe"))) {
+          $serverPath = Join-Path $runtime "build/bin/llama-server.exe"
+          if (-not (Test-Path $serverPath)) {
             throw "Pinned runtime did not contain llama-server.exe"
+          }
+          Push-Location (Split-Path $serverPath)
+          try {
+            $versionOutput = (& ".\llama-server.exe" --version 2>&1 | Out-String).Trim()
+            $versionExitCode = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          Write-Host "Pinned runtime --version output: $versionOutput"
+          if ($versionExitCode -ne 0) {
+            throw "Pinned runtime --version exited $versionExitCode"
+          }
+          if ($versionOutput -notmatch '(?m)(?:version:\s+b?10431(?:-|\s)|\(build\s+10431,)') {
+            throw "Pinned runtime did not report build 10431"
           }
 
       - name: Build existing components
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           yarn build:tauri:plugin:api
           yarn build:extensions:win32
           yarn download:bin
@@ -165,12 +214,15 @@ jobs:
       - name: Test product seams
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
           yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
           yarn build:web
+          cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
@@ -183,6 +235,8 @@ jobs:
       - name: Collect internal NSIS installer
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $installers = @(
             Get-ChildItem "src-tauri/target/debug/bundle/nsis" -Filter "*.exe" -File -Recurse
           )
@@ -195,8 +249,36 @@ jobs:
           }
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: YoreBot-Windows-unsigned-internal
           path: artifacts/*.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Smoke fresh NSIS install and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installers = @(Get-ChildItem "artifacts" -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
+
+  pinned-model-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pinned model on pinned CPU runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot
