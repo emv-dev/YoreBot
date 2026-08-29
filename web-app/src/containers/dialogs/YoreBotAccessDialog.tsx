@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,6 +9,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { localStorageKey } from '@/constants/localStorage'
+import { YOREBOT_PINNED_MODELS } from '@/constants/yorebot-models'
 import {
   forgetYoreBotAccess,
   getYoreBotAccessStatus,
@@ -35,6 +37,11 @@ export default function YoreBotAccessDialog({
   const [licenseKey, setLicenseKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const selectedModel = useMemo(() => {
+    if (!open) return undefined
+    const selectedId = localStorage.getItem(localStorageKey.yorebotPinnedModel)
+    return YOREBOT_PINNED_MODELS.find((model) => model.id === selectedId)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -151,25 +158,66 @@ export default function YoreBotAccessDialog({
           </p>
         </div>
 
-        {!status.fullAccess && !status.hasSavedKey && (
-          <div className="grid gap-2">
-            <Button
-              type="button"
-              disabled={!status.monthlyCheckoutUrl || busy}
-              onClick={() => void openHosted(status.monthlyCheckoutUrl)}
-            >
-              Try 7 days - then $20/month
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!status.yearlyCheckoutUrl || busy}
-              onClick={() => void openHosted(status.yearlyCheckoutUrl)}
-            >
-              $200/year
-            </Button>
-          </div>
-        )}
+        {!status.fullAccess && !status.hasSavedKey && selectedModel ? (
+          <>
+            <div className="rounded-xl border p-4">
+              <p className="text-sm font-medium">Included AI</p>
+              <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
+                <dt className="text-muted-foreground">Model</dt>
+                <dd>{selectedModel.baseModel}</dd>
+                <dt className="text-muted-foreground">Developer</dt>
+                <dd>{selectedModel.developer}</dd>
+                <dt className="text-muted-foreground">License</dt>
+                <dd>{selectedModel.license}</dd>
+              </dl>
+              <details className="mt-3 border-t pt-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  Verification details
+                </summary>
+                <dl className="mt-3 grid gap-2">
+                  <div>
+                    <dt className="text-muted-foreground">Repository</dt>
+                    <dd className="break-all">{selectedModel.repository}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Revision</dt>
+                    <dd className="break-all font-mono text-xs">
+                      {selectedModel.revision}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">SHA-256</dt>
+                    <dd className="break-all font-mono text-xs">
+                      {selectedModel.sha256}
+                    </dd>
+                  </div>
+                </dl>
+              </details>
+            </div>
+            <div className="grid gap-2">
+              <Button
+                type="button"
+                disabled={!status.monthlyCheckoutUrl || busy}
+                onClick={() => void openHosted(status.monthlyCheckoutUrl)}
+              >
+                Try 7 days - then $20/month
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!status.yearlyCheckoutUrl || busy}
+                onClick={() => void openHosted(status.yearlyCheckoutUrl)}
+              >
+                $200/year
+              </Button>
+            </div>
+          </>
+        ) : !status.fullAccess && !status.hasSavedKey ? (
+          <p className="rounded-xl border p-4 text-sm text-muted-foreground">
+            Finish setup before buying access. Free Chat and Restore access
+            still work.
+          </p>
+        ) : null}
 
         {!status.fullAccess && !status.hasSavedKey && (
           <div className="grid gap-2 border-t pt-4">

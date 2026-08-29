@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import YoreBotAccessDialog from '@/containers/dialogs/YoreBotAccessDialog'
+import { localStorageKey } from '@/constants/localStorage'
+import { YOREBOT_PINNED_MODELS } from '@/constants/yorebot-models'
 import type { YoreBotAccessStatus } from '@/services/yorebot-access'
 
 const mocks = vi.hoisted(() => ({
@@ -42,11 +44,20 @@ const fullStatus: YoreBotAccessStatus = {
 
 describe('YoreBotAccessDialog', () => {
   beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(
+      localStorageKey.yorebotPinnedModel,
+      YOREBOT_PINNED_MODELS[0].id
+    )
     mocks.getStatus.mockReset().mockResolvedValue(freeStatus)
     mocks.refresh.mockReset().mockResolvedValue(fullStatus)
     mocks.restore.mockReset().mockResolvedValue(fullStatus)
     mocks.forget.mockReset().mockResolvedValue(freeStatus)
     mocks.openUrl.mockReset().mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('keeps the complete customer flow on one plain-language screen', async () => {
@@ -81,7 +92,9 @@ describe('YoreBotAccessDialog', () => {
       'type',
       'password'
     )
-    expect(document.body.textContent).not.toMatch(/provider|model/i)
+    expect(document.body.textContent).not.toMatch(
+      /provider|runtime|quantization|hardware/i
+    )
     expect(
       screen.getByText(
         'Saved securely on this computer and sent only to Gumroad to verify access.'
@@ -97,6 +110,88 @@ describe('YoreBotAccessDialog', () => {
       freeStatus.monthlyCheckoutUrl
     )
   })
+
+  it.each(YOREBOT_PINNED_MODELS)(
+    'shows exact recorded provenance for $id before checkout without fetching',
+    (selected) => {
+      localStorage.setItem(localStorageKey.yorebotPinnedModel, selected.id)
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+
+      render(
+        <YoreBotAccessDialog
+          open
+          onOpenChange={vi.fn()}
+          status={freeStatus}
+          onStatusChange={vi.fn()}
+          requestVersion={{ current: 0 }}
+        />
+      )
+
+      const model = screen.getByText(selected.baseModel)
+      const monthly = screen.getByRole('button', {
+        name: 'Try 7 days - then $20/month',
+      })
+      expect(model.compareDocumentPosition(monthly)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING
+      )
+      expect(screen.getByText(selected.developer)).toBeInTheDocument()
+      expect(screen.getByText(selected.license)).toBeInTheDocument()
+
+      const verification = screen
+        .getByText('Verification details')
+        .closest('details')
+      expect(verification).not.toHaveAttribute('open')
+      expect(screen.getByText(selected.repository)).toBeInTheDocument()
+      expect(screen.getByText(selected.revision)).toBeInTheDocument()
+      expect(screen.getByText(selected.sha256)).toBeInTheDocument()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    ['missing', null],
+    ['tampered', 'not-a-reviewed-model'],
+  ])(
+    'requires setup before checkout when the recorded pin is %s',
+    (_label, recordedPin) => {
+      if (recordedPin) {
+        localStorage.setItem(localStorageKey.yorebotPinnedModel, recordedPin)
+      } else {
+        localStorage.removeItem(localStorageKey.yorebotPinnedModel)
+      }
+
+      render(
+        <YoreBotAccessDialog
+          open
+          onOpenChange={vi.fn()}
+          status={freeStatus}
+          onStatusChange={vi.fn()}
+          requestVersion={{ current: 0 }}
+        />
+      )
+
+      expect(
+        screen.queryByRole('button', {
+          name: 'Try 7 days - then $20/month',
+        })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: '$200/year' })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByText('Finish setup before buying access.', { exact: false })
+      ).toBeInTheDocument()
+      expect(screen.getByLabelText('Access key')).toBeEnabled()
+      expect(
+        screen.getByRole('button', { name: 'Restore access' })
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Manage membership' })
+      ).toBeEnabled()
+      expect(mocks.openUrl).not.toHaveBeenCalled()
+    }
+  )
 
   it('restores a masked key and reports full access without echoing it', async () => {
     const onStatusChange = vi.fn()
