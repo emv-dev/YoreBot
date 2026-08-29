@@ -317,7 +317,8 @@ Append-only. Newest at top. Each entry follows this shape:
   product pins and blocking outbound access for the exact server, run one
   loopback CPU session through inventory/proposal, explicit acceptance,
   one-time approvals, summary, and undo; run a separate denial fixture and
-  compare complete disk snapshots.
+  compare complete disk snapshots. Use product model-profile detection and the
+  production completion deadline while retaining fast scripted unit deadlines.
 - **Consequences:** Pull requests retain lightweight static and compile gates.
   A dispatched run gives pass/fail end-to-end evidence for the bounded
   Downloads task without making speed, GUI, or broader Agent claims.

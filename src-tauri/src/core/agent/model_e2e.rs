@@ -8,12 +8,15 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::llm_client::{LlamaBackend, LlamaServerClient, LlamaSessionTarget};
+use super::model_profile::{detect_model_profile, AgentModelProfile};
 use super::path_policy::EditableRoots;
 use super::prompt::{
-    build_stable_prefix, CapabilitiesSummary, SkillDescriptor, DEFAULT_MAX_PARALLEL_TOOL_CALLS,
-    ITERATION_ONE_TOOLS,
+    build_stable_prefix_for_profile, CapabilitiesSummary, SkillDescriptor,
+    DEFAULT_MAX_PARALLEL_TOOL_CALLS, ITERATION_ONE_TOOLS,
 };
-use super::runner::{run_turn, RunTurnInput};
+use super::runner::{
+    run_turn_with_completion_deadline, RunTurnInput, PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE,
+};
 use super::session::AgentSessionState;
 use super::skills::{available_tool_names, SkillRegistry};
 use super::test_support::{
@@ -25,6 +28,7 @@ const REQUIRED_MODEL_ID: &str = "Qwen3.5-9B-Q4_K_M";
 const REQUIRED_MODEL_FILENAME: &str = "Qwen3.5-9B-Q4_K_M.gguf";
 const REQUIRED_BACKEND_BUILD: &str = "10431";
 const DOWNLOADS_SKILL: &str = "downloads-organizer";
+const DOWNLOADS_AGENT_COMPLETION_DEADLINE: Duration = PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE;
 
 struct ManagedLlamaServer {
     child: Child,
@@ -61,6 +65,7 @@ struct LiveHarness {
     workspace: TestWorkspace,
     downloads: PathBuf,
     client: LlamaServerClient,
+    model_profile: AgentModelProfile,
     skill_registry: SkillRegistry,
     stable_prefix: String,
     session: AgentSessionState,
@@ -108,8 +113,6 @@ impl LiveHarness {
                 "8192",
                 "--no-webui",
                 "--jinja",
-                "--threads",
-                "2",
                 "-ngl",
                 "0",
             ])
@@ -134,12 +137,21 @@ impl LiveHarness {
             backend: LlamaBackend::LlamacppUpstream,
         })
         .expect("create upstream llama-server client");
-        let stable_prefix = downloads_stable_prefix(&skill_registry, &downloads);
+        let profile_cancellation = CancellationToken::new();
+        let model_profile = match client.fetch_props(&profile_cancellation).await {
+            Ok(props) => detect_model_profile(&props),
+            Err(error) => {
+                eprintln!("Agent model-profile probe failed; using plain profile: {error}");
+                AgentModelProfile::Plain
+            }
+        };
+        let stable_prefix = downloads_stable_prefix(&skill_registry, &downloads, model_profile);
         Self {
             process,
             workspace,
             downloads,
             client,
+            model_profile,
             skill_registry,
             stable_prefix,
             session: AgentSessionState::new("downloads-agent-acceptance"),
@@ -161,6 +173,7 @@ impl LiveHarness {
             &self.skill_registry,
             &self.downloads,
             &self.stable_prefix,
+            self.model_profile,
             &mut self.session,
             run_id,
             user_message,
@@ -171,6 +184,18 @@ impl LiveHarness {
         )
         .await
     }
+}
+
+#[test]
+fn live_acceptance_uses_production_deadline_without_slowing_unit_tests() {
+    assert_eq!(
+        super::runner::TEST_TOOL_STEP_COMPLETION_DEADLINE,
+        Duration::from_millis(100)
+    );
+    assert_eq!(
+        DOWNLOADS_AGENT_COMPLETION_DEADLINE,
+        Duration::from_secs(180)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -316,7 +341,11 @@ async fn run_denied_scenario(harness: &mut LiveHarness) {
         file("denied-report.pdf", b"DENIED_SENTINEL_314"),
         file("leave-alone.bin", b"LEAVE_ALONE_159"),
     ]);
-    let stable_prefix = downloads_stable_prefix(&harness.skill_registry, &denied_downloads);
+    let stable_prefix = downloads_stable_prefix(
+        &harness.skill_registry,
+        &denied_downloads,
+        harness.model_profile,
+    );
     let mut session = AgentSessionState::new("downloads-agent-denied");
     let approval = RecordingApproval::deny();
     let events = run_scenario(
@@ -325,6 +354,7 @@ async fn run_denied_scenario(harness: &mut LiveHarness) {
         &harness.skill_registry,
         &denied_downloads,
         &stable_prefix,
+        harness.model_profile,
         &mut session,
         "downloads-denied",
         "This exact plan was already reviewed and I explicitly accept it: move denied-report.pdf to Documents/denied-report.pdf. Call os.fs.move once now. The action will be denied; do not retry it or create anything, and reply that both denied-report.pdf and leave-alone.bin stayed where they were.",
@@ -360,6 +390,7 @@ async fn run_scenario(
     skill_registry: &SkillRegistry,
     working_dir: &Path,
     stable_prefix: &str,
+    model_profile: AgentModelProfile,
     session: &mut AgentSessionState,
     run_id: &str,
     user_message: &str,
@@ -376,14 +407,14 @@ async fn run_scenario(
     let mut events = Vec::new();
     let result = tokio::time::timeout(
         timeout,
-        run_turn(
+        run_turn_with_completion_deadline(
             RunTurnInput {
                 run_id,
                 session_id: &session_id,
                 user_message,
                 selected_skill,
                 stable_prefix,
-                model_profile: super::model_profile::AgentModelProfile::Plain,
+                model_profile,
                 working_dir,
                 editable_roots: &editable_roots,
                 external_read_only_roots: &[],
@@ -400,6 +431,7 @@ async fn run_scenario(
                 quota: None,
                 restrict_to_yorebot_catalog: true,
             },
+            DOWNLOADS_AGENT_COMPLETION_DEADLINE,
             |event| collect_event(&mut events, event),
         ),
     )
@@ -417,7 +449,11 @@ async fn run_scenario(
     }
 }
 
-fn downloads_stable_prefix(skill_registry: &SkillRegistry, working_dir: &Path) -> String {
+fn downloads_stable_prefix(
+    skill_registry: &SkillRegistry,
+    working_dir: &Path,
+    model_profile: AgentModelProfile,
+) -> String {
     let record = skill_registry
         .get_enabled(DOWNLOADS_SKILL)
         .expect("enabled bundled Downloads organizer");
@@ -429,7 +465,7 @@ fn downloads_stable_prefix(skill_registry: &SkillRegistry, working_dir: &Path) -
         requires_scripts: record.manifest.requires_scripts.clone(),
         dangerous: record.manifest.dangerous,
     };
-    build_stable_prefix(
+    build_stable_prefix_for_profile(
         ITERATION_ONE_TOOLS,
         &[skill],
         &CapabilitiesSummary {
@@ -443,6 +479,7 @@ fn downloads_stable_prefix(skill_registry: &SkillRegistry, working_dir: &Path) -
         },
         DEFAULT_MAX_PARALLEL_TOOL_CALLS,
         None,
+        model_profile,
     )
 }
 

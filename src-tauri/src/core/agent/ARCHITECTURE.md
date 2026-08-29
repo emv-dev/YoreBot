@@ -150,8 +150,12 @@ The ignored test requires:
 
 The harness chooses a free loopback port and launches the server with one
 parallel slot, an 8192-token context, Jinja templates, no Web UI, and CPU-only
-inference. It verifies build `10431`, uses the server directory as its working
-directory, prints bounded provenance, and waits for loopback `/health`.
+inference while letting llama.cpp choose the CPU thread count. It verifies
+build `10431`, uses the server directory as its working directory, prints
+bounded provenance, waits for loopback `/health`, and selects the model profile
+from `/props` like the product path. The ignored ritual explicitly uses the
+production 180-second completion-attempt deadline; deterministic runner tests
+retain their 100-millisecond deadline.
 
 Run it from the repository root:
 

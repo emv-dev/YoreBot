@@ -138,6 +138,7 @@ test('model smoke verifies both downloads before an exact outbound block and loo
 test('manual model ritual exercises the real Downloads Agent contract', () => {
   const script = read('scripts/test-windows-pinned-model.ps1')
   const harness = read('src-tauri/src/core/agent/model_e2e.rs')
+  const runner = read('src-tauri/src/core/agent/runner.rs')
   const workflow = read('.github/workflows/windows-internal.yml')
   const skill = read(
     'src-tauri/resources/agent-skills/downloads-organizer/SKILL.md'
@@ -162,6 +163,14 @@ test('manual model ritual exercises the real Downloads Agent contract', () => {
   assert.match(script, /ATOMIC_AGENT_E2E_LLAMA_SERVER/)
   assert.match(script, /ATOMIC_AGENT_E2E_MODEL/)
   assert.match(script, /downloads_agent_acceptance/)
+  assert.match(harness, /run_turn_with_completion_deadline/)
+  assert.match(harness, /PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE/)
+  assert.match(runner, /TEST_TOOL_STEP_COMPLETION_DEADLINE/)
+  assert.match(runner, /Duration::from_millis\(100\)/)
+  assert.match(runner, /Duration::from_secs\(180\)/)
+  assert.match(harness, /detect_model_profile/)
+  assert.match(harness, /build_stable_prefix_for_profile/)
+  assert.doesNotMatch(harness, /"--threads"/)
   assert.ok(
     script.indexOf('$PSNativeCommandUseErrorActionPreference = $true') <
       script.indexOf('downloads_agent_acceptance')
