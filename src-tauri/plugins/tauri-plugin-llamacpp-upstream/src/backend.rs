@@ -261,10 +261,10 @@ fn backend_executable_path(backend_dir: &PathBuf) -> PathBuf {
 
 fn parse_binary_version(output: &str) -> Option<u32> {
     output.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("version:")
-            .and_then(|value| value.split_whitespace().next())
-            .and_then(|value| value.parse::<u32>().ok())
+        let value = line.trim().strip_prefix("version:")?.trim_start();
+        let token = value.split_whitespace().next()?;
+        let version = token.strip_prefix('b').unwrap_or(token);
+        version.split('-').next()?.parse::<u32>().ok()
     })
 }
 
@@ -1929,6 +1929,12 @@ mod tests {
 
     #[test]
     fn test_parse_binary_version() {
+        assert_eq!(
+            parse_binary_version(
+                "version: b10431-1692f9e (build 10431, commit 1692f9e)\nbuilt with MSVC"
+            ),
+            Some(10431)
+        );
         assert_eq!(
             parse_binary_version("version: 9937 (2021515a1)\nbuilt with AppleClang"),
             Some(9937)

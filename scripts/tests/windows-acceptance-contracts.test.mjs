@@ -58,6 +58,8 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     '-RedirectStandardError $appStderrPath',
     'Write-LaunchDiagnostics',
     'YoreBot exited during startup with exit code',
+    'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64',
+    'did not report its exact bundled backend ready',
     "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\YoreBot'",
     'use a fresh Windows runner',
     'Uninstaller touched sibling sentinel',
@@ -115,6 +117,10 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   assert.match(internal, /test-windows-installer\.ps1/)
   assert.match(internal, /node --test scripts\/tests\/windows-acceptance-contracts\.test\.mjs/)
   assert.match(internal, /test-windows-pinned-model\.ps1 -ValidateManifestOnly/)
+  assert.match(
+    internal,
+    /tauri-plugin-llamacpp-upstream\/Cargo\.toml test_parse_binary_version/
+  )
   assert.ok(installerUpload >= 0 && installerUpload < installerSmoke)
   assert.match(internal.slice(installerUpload, installerSmoke), /if: always\(\)/)
   assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)

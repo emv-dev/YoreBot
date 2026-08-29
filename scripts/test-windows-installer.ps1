@@ -202,6 +202,18 @@ try {
     if ([System.IO.Path]::GetFullPath($liveApp.Path) -ine $appPath) {
         throw 'Observed YoreBot process did not run from the installed path'
     }
+    $startupOutput = @($appStdoutPath, $appStderrPath) |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        ForEach-Object { Get-Content -LiteralPath $_ -Raw -ErrorAction SilentlyContinue }
+    $backendReady = 'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64'
+    if (($startupOutput -join "`n") -notlike "*$backendReady*") {
+        Write-LaunchDiagnostics `
+            -StartedAt $launchStartedAt `
+            -Process $launchedApp `
+            -StdoutPath $appStdoutPath `
+            -StderrPath $appStderrPath
+        throw "YoreBot did not report its exact bundled backend ready: $backendReady"
+    }
 
     New-Item -ItemType Directory -Path $installSibling, $dataSibling -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $installSibling 'keep.txt') -Value 'keep' -NoNewline -Force
