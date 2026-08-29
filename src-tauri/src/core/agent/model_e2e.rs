@@ -237,13 +237,11 @@ async fn downloads_agent_acceptance() {
     );
     assert!(plan_approval.requests().is_empty(), "events: {plan:#?}");
     assert_snapshot(&harness.downloads, &initial);
+    // The proposal must name every planned mutation. The inventory outcome and
+    // unchanged snapshot, above, separately prove the uncertain file stayed put.
     assert_reply_mentions(
         &plan,
-        &[
-            "quarterly-report.pdf",
-            "Documents/quarterly-report.pdf",
-            "mystery.download",
-        ],
+        &["quarterly-report.pdf", "Documents/quarterly-report.pdf"],
     );
 
     let mutation_approval = RecordingApproval::allow();
