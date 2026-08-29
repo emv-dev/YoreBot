@@ -6,20 +6,14 @@ import { useServiceHub } from '@/hooks/useServiceHub'
 import { useEffect } from 'react'
 import { useAssistant, defaultAssistant } from '@/hooks/useAssistant'
 import { useThreads } from '@/hooks/useThreads'
-import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { useAppState } from '@/hooks/useAppState'
 import { switchToModel } from '@/utils/switchModel'
 import { useModelLoad } from '@/hooks/useModelLoad'
 import { consumeSilentImport } from '@/utils/backgroundImports'
-import {
-  LOCAL_LLAMACPP_PROVIDER,
-  SERVER_START_WATCHDOG_MS,
-  withTimeout,
-} from '@/lib/utils'
+import { LOCAL_LLAMACPP_PROVIDER } from '@/lib/utils'
 import { AppEvent, events, ModelEvent } from '@janhq/core'
 import { toast } from 'sonner'
 import { isLocalProvider } from '@/utils/registerRemoteProvider'
-import { hydrateActiveModelsForRunningServer } from '@/utils/activeModelsSync'
 
 export function DataProvider() {
   const { setProviders } = useModelProvider()
@@ -27,8 +21,6 @@ export function DataProvider() {
   const { setAssistants, initializeWithLastUsed } = useAssistant()
   const { setThreads } = useThreads()
   const serviceHub = useServiceHub()
-
-  const setServerStatus = useAppState((state) => state.setServerStatus)
 
   useEffect(() => {
     if (localStorage.getItem(localStorageKey.factoryResetPending) === 'true') {
@@ -231,7 +223,7 @@ export function DataProvider() {
       events.off(AppEvent.onModelImported, handleModelImported)
       console.log('[LocalAPI] Unregistered onModelImported handler')
     }
-  }, [serviceHub, setProviders, setServerStatus])
+  }, [serviceHub, setProviders])
 
   // Mirror any auto-increase of ctx_len performed by a backend extension
   // (triggered by the Local API Server proxy detecting a context-limit error)
@@ -476,90 +468,6 @@ export function DataProvider() {
       if (unlistenSessionDied) unlistenSessionDied()
     }
   }, [])
-
-  // Auto-start Local API Server on app startup, but only re-attach to an
-  // already-running server or raise the proxy for a model that is already
-  // running in a local engine. We never proactively load/select a model here:
-  // if nothing is running, the server stays down until the user starts a model.
-  useEffect(() => {
-    const autoStartServer = async () => {
-      try {
-        const { enableOnStartup } = useLocalApiServer.getState()
-        if (!enableOnStartup) {
-          console.log(
-            '[LocalAPI:startup] Local API server auto-start disabled in settings; skipping auto-start'
-          )
-          return
-        }
-
-        const isRunning = await serviceHub.app().getServerStatus()
-        if (isRunning) {
-          console.log('[LocalAPI:startup] Server already running')
-          setServerStatus('running')
-          // `activeModels` is in-memory only; without this the provider UI
-          // would render "Start" for the cloud model the proxy is already
-          // routing, until the user manually re-selects it. See issue where
-          // navigating between tabs appears to "forget" the running model.
-          await hydrateActiveModelsForRunningServer(serviceHub.models())
-          return
-        }
-
-        // Product decision: do NOT proactively load or pick a model on startup.
-        // The Local API Server is only raised for a model that is already
-        // running in a local engine (llamacpp/mlx). If nothing is running, the
-        // server stays down until the user starts a model manually.
-        const runningModels = await serviceHub.models().getActiveModels()
-        if (!runningModels || runningModels.length === 0) {
-          console.log(
-            '[LocalAPI:startup] No model currently running; leaving server stopped'
-          )
-          return
-        }
-
-        const serverState = useLocalApiServer.getState()
-        setServerStatus('pending')
-        console.log(
-          '[LocalAPI:startup] Raising server for already-running model(s):',
-          runningModels
-        )
-        try {
-          // ATO-270: never let a stuck native invoke leave the UI on
-          // "Starting Server" forever.
-          const startServerCall = window.core?.api?.startServer({
-            host: serverState.serverHost,
-            port: serverState.serverPort,
-            prefix: serverState.apiPrefix,
-            apiKey: serverState.apiKey,
-            trustedHosts: serverState.trustedHosts,
-            isCorsEnabled: serverState.corsEnabled,
-            isVerboseEnabled: serverState.verboseLogs,
-            proxyTimeout: serverState.proxyTimeout,
-          }) as Promise<number> | undefined
-          const actualPort = startServerCall
-            ? await withTimeout(
-                startServerCall,
-                SERVER_START_WATCHDOG_MS,
-                'Timed out waiting for the Local API Server to start.'
-              )
-            : undefined
-          if (actualPort && actualPort !== serverState.serverPort) {
-            serverState.setServerPort(actualPort)
-          }
-          await hydrateActiveModelsForRunningServer(serviceHub.models())
-          setServerStatus('running')
-        } catch (err) {
-          console.error('[LocalAPI:startup] Server start failed:', err)
-          setServerStatus('stopped')
-        }
-      } catch (error) {
-        console.error('[LocalAPI:startup] Failed to auto-start server:', error)
-        setServerStatus('stopped')
-      }
-    }
-
-    autoStartServer()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serviceHub])
 
   return null
 }

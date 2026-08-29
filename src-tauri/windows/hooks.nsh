@@ -28,14 +28,9 @@
   ; helper processes that the app spawns and that frequently keep WebView2
   ; / data files locked when the uninstaller tries to RmDir /r.
   ;
-  ; We use taskkill so we don't depend on the nsProcess plugin being bundled.
-  ; /T terminates child processes too. Errors are silently ignored — the
-  ; process may simply not be running.
-  nsExec::Exec 'taskkill /F /T /IM "llama-server.exe"'
-  Pop $0
-  nsExec::Exec 'taskkill /F /T /IM "bun.exe"'
-  Pop $0
-  nsExec::Exec 'taskkill /F /T /IM "uv.exe"'
+  ; Stop only helpers whose executable belongs to this install or YoreBot's
+  ; data folder. Never terminate another app's llama.cpp, Bun, or uv process.
+  nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name llama-server,bun,uv -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like \"$INSTDIR*\" -or $_.Path -like \"$APPDATA\YoreBot*\" } catch { $false } } | Stop-Process -Force -ErrorAction SilentlyContinue"'
   Pop $0
 
   ; msedgewebview2.exe is shared with other Edge-based apps on the system —

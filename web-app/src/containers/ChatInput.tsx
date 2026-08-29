@@ -3,7 +3,6 @@ import TextareaAutosize from 'react-textarea-autosize'
 import {
   cn,
   formatBytes,
-  LOCAL_LLAMACPP_PROVIDER,
   isLlamacppProvider,
 } from '@/lib/utils'
 import { usePrompt } from '@/hooks/usePrompt'
@@ -23,7 +22,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ArrowRight, PlusIcon } from 'lucide-react'
 import {
-  IconPhoto,
   IconTool,
   IconCodeCircle2,
   IconPlayerStopFilled,
@@ -50,7 +48,6 @@ import {
 } from '@/hooks/useInitialMessage'
 import { useOptimisticUserMessage } from '@/hooks/useOptimisticUserMessage'
 import { buildOptimisticUserMessage } from '@/lib/optimisticUserMessage'
-import { localStorageKey } from '@/constants/localStorage'
 import { defaultModel } from '@/lib/models'
 import { useAssistant } from '@/hooks/useAssistant'
 import DropdownToolsAvailable from '@/containers/DropdownToolsAvailable'
@@ -103,7 +100,6 @@ import {
 } from '@/containers/chatInput/classifyDroppedPaths'
 import JanBrowserExtensionDialog from '@/containers/dialogs/JanBrowserExtensionDialog'
 import { useJanBrowserExtension } from '@/hooks/useJanBrowserExtension'
-import { PromptVisionModel } from '@/containers/PromptVisionModel'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { useDownloadStore } from '@/hooks/useDownloadStore'
 import ReasoningToggle from '@/containers/ReasoningToggle'
@@ -160,9 +156,6 @@ const ChatInput = memo(function ChatInput({
   const prompt = usePrompt((state) => state.prompt)
   const setPrompt = usePrompt((state) => state.setPrompt)
   const currentThreadId = useThreads((state) => state.currentThreadId)
-  const updateCurrentThreadModel = useThreads(
-    (state) => state.updateCurrentThreadModel
-  )
   const { t } = useTranslation()
   const spellCheckChatInput = useGeneralSetting(
     (state) => state.spellCheckChatInput
@@ -178,10 +171,6 @@ const ChatInput = memo(function ChatInput({
   const defaultAssistantId = useAssistant((state) => state.defaultAssistantId)
   const selectedModel = useModelProvider((state) => state.selectedModel)
   const selectedProvider = useModelProvider((state) => state.selectedProvider)
-  const selectModelProvider = useModelProvider(
-    (state) => state.selectModelProvider
-  )
-  const updateProvider = useModelProvider((state) => state.updateProvider)
 
   const canSelectAgentMode = canSelectChatAgentMode(initialMessage, projectId)
   const isAgentProviderSelected = isLlamacppProvider(selectedProvider)
@@ -265,7 +254,6 @@ const ChatInput = memo(function ChatInput({
   const [tooltipToolsAvailable, setTooltipToolsAvailable] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [hasMmproj, setHasMmproj] = useState(false)
-  const [showVisionModelPrompt, setShowVisionModelPrompt] = useState(false)
   const [isPreparingDocumentAttachments, setIsPreparingDocumentAttachments] =
     useState(false)
   const activeModels = useAppState(useShallow((state) => state.activeModels))
@@ -602,8 +590,9 @@ const ChatInput = memo(function ChatInput({
       !hasMmproj &&
       attachments.some((attachment) => attachment.type === 'image')
     ) {
-      toast.error(t('chat:agentErrors.visionModelRequired'))
-      setShowVisionModelPrompt(true)
+      toast.info('Images are not supported yet', {
+        description: 'This YoreBot version uses one verified text model.',
+      })
       return
     }
 
@@ -1616,83 +1605,6 @@ const ChatInput = memo(function ChatInput({
     }
   }
 
-  // Open the image picker dialog (extracted for reuse)
-  const openImagePicker = useCallback(async () => {
-    if (isPlatformTauri()) {
-      try {
-        const selected = await serviceHub.dialog().open({
-          multiple: true,
-          filters: [
-            {
-              name: 'Images',
-              extensions: ['jpg', 'jpeg', 'png', 'webp'],
-            },
-          ],
-        })
-
-        if (selected) {
-          const paths = Array.isArray(selected) ? selected : [selected]
-          const files: File[] = []
-
-          for (const path of paths) {
-            try {
-              // Use Tauri's convertFileSrc to create a valid URL for the file
-              const { convertFileSrc } = await import('@tauri-apps/api/core')
-              const fileUrl = convertFileSrc(path)
-
-              // Fetch the file as blob
-              const response = await fetch(fileUrl)
-              if (!response.ok) {
-                throw new Error(`Failed to fetch file: ${response.statusText}`)
-              }
-
-              const blob = await response.blob()
-              const fileName =
-                path.split(/[\\/]/).filter(Boolean).pop() || 'image'
-              const ext = fileName.toLowerCase().split('.').pop()
-              const mimeType =
-                ext === 'png'
-                  ? 'image/png'
-                  : ext === 'webp'
-                    ? 'image/webp'
-                    : 'image/jpeg'
-
-              const file = new File([blob], fileName, { type: mimeType })
-              files.push(file)
-            } catch (error) {
-              console.error('Failed to read file:', error)
-              toast.error('Failed to read file', {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              })
-            }
-          }
-
-          if (files.length > 0) {
-            await processImageFiles(files)
-          }
-        }
-      } catch (error) {
-        console.error('Failed to open file dialog:', error)
-      }
-
-      if (textareaRef.current) {
-        textareaRef.current.focus()
-      }
-    } else {
-      // Fallback to input click for web
-      fileInputRef.current?.click()
-    }
-  }, [serviceHub, processImageFiles])
-
-  const handleImagePickerClick = async () => {
-    if (hasMmproj) {
-      await openImagePicker()
-      return
-    }
-    setShowVisionModelPrompt(true)
-  }
-
   // --- Audio attachments (omni/audio-capable models) -----------------------
   // Audio mirrors the image attachment pipeline (validate → read as base64 →
   // commit to the per-thread chip store) but is never downscaled/transcoded,
@@ -1916,62 +1828,6 @@ const ChatInput = memo(function ChatInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceHub])
 
-  const handleVisionModelDownloadComplete = useCallback(
-    (modelId: string) => {
-      setShowVisionModelPrompt(false)
-
-      try {
-        localStorage.setItem(
-          localStorageKey.lastUsedModel,
-          JSON.stringify({
-            provider: LOCAL_LLAMACPP_PROVIDER,
-            model: modelId,
-          })
-        )
-      } catch {
-        // Ignore localStorage errors
-      }
-
-      setTimeout(() => {
-        // `getProviderByName('llamacpp')` is alias-aware on Windows and
-        // returns the upstream provider, but `updateProvider` is not — so
-        // we must address the canonical id for the platform here, otherwise
-        // the vision capability is never persisted on Windows.
-        const provider = getProviderByName(LOCAL_LLAMACPP_PROVIDER)
-        if (provider) {
-          const modelIndex = provider.models.findIndex((m) => m.id === modelId)
-          if (modelIndex !== -1) {
-            const model = provider.models[modelIndex]
-            const capabilities = model.capabilities || []
-
-            if (!capabilities.includes('vision')) {
-              const updatedModels = [...provider.models]
-              updatedModels[modelIndex] = {
-                ...model,
-                capabilities: [...capabilities, 'vision'],
-              }
-              updateProvider(LOCAL_LLAMACPP_PROVIDER, {
-                models: updatedModels,
-              })
-            }
-          }
-        }
-
-        selectModelProvider(LOCAL_LLAMACPP_PROVIDER, modelId)
-        updateCurrentThreadModel({
-          id: modelId,
-          provider: LOCAL_LLAMACPP_PROVIDER,
-        })
-      }, 500)
-    },
-    [
-      selectModelProvider,
-      getProviderByName,
-      updateProvider,
-      updateCurrentThreadModel,
-    ]
-  )
-
   const handleTauriDrop = (paths: string[]) => {
     if (!attachmentsEnabled) {
       toast.info('Attachments are disabled in Settings')
@@ -1988,8 +1844,8 @@ const ChatInput = memo(function ChatInput({
 
     if (images.length > 0) {
       if (!hasMmproj) {
-        toast.error('Vision model required', {
-          description: 'Select a model with vision support to attach images.',
+        toast.info('Images are not supported yet', {
+          description: 'This YoreBot version uses one verified text model.',
         })
       } else {
         void ingestImagePaths(images)
@@ -2097,8 +1953,8 @@ const ChatInput = memo(function ChatInput({
     if (imageFiles.length === 0) return
 
     if (!hasMmproj) {
-      toast.error('Vision model required', {
-        description: 'Select a model with vision support to attach images.',
+      toast.info('Images are not supported yet', {
+        description: 'This YoreBot version uses one verified text model.',
       })
       return
     }
@@ -2507,21 +2363,6 @@ const ChatInput = memo(function ChatInput({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start">
-                      {/* Vision image attachment - always enabled, prompts to download vision model if needed */}
-                      <DropdownMenuItem onClick={handleImagePickerClick}>
-                        <IconPhoto
-                          size={18}
-                          className="text-muted-foreground"
-                        />
-                        <span>Add Images</span>
-                        <input
-                          type="file"
-                          ref={fileInputRef}
-                          className="hidden"
-                          multiple
-                          onChange={handleFileChange}
-                        />
-                      </DropdownMenuItem>
                       {/* Audio attachment — only shown for omni/audio-capable
                           models (gated on the `audio` capability). */}
                       {hasAudio && (
@@ -2828,12 +2669,6 @@ const ChatInput = memo(function ChatInput({
         onCancel={handleExtensionDialogCancel}
       />
 
-      {/* Vision Model Download Prompt */}
-      <PromptVisionModel
-        open={showVisionModelPrompt}
-        onClose={() => setShowVisionModelPrompt(false)}
-        onDownloadComplete={handleVisionModelDownloadComplete}
-      />
     </div>
   )
 })

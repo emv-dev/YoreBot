@@ -180,8 +180,8 @@ if (Test-Path $llamacppDir) { Remove-Item $llamacppDir -Recurse -Force }
 New-Item -ItemType Directory -Path $llamacppDir -Force | Out-Null
 
 $tag = 'b10431'
-$expectedSize = 18853706
-$expectedSha256 = '631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf'
+$expectedSize = 18462983
+$expectedSha256 = 'aa16a2102de8730be6079f67f77997ca549e9a07125563571afb2fb4e810ec2c'
 $archiveUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/llama-$tag-bin-$backend.zip"
 $archivePath = Join-Path $env:TEMP 'llamacpp-upstream-backend.zip'
 

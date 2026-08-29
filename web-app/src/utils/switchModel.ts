@@ -29,7 +29,6 @@ import {
   getProviderTitle,
   MODEL_LOAD_WATCHDOG_MS,
   OPERATION_TIMED_OUT_CODE,
-  SERVER_START_WATCHDOG_MS,
   withTimeout,
 } from '@/lib/utils'
 
@@ -128,7 +127,7 @@ function isLocalEngineProvider(providerName: string): boolean {
 // an un-timeboxed network call somewhere in backend preparation, the promise
 // never settles and the "Starting Server" UI (`serverStatus === 'pending'`)
 // hangs forever, with no error and no way to retry. `MODEL_LOAD_WATCHDOG_MS`
-// / `SERVER_START_WATCHDOG_MS` (see `@/lib/utils`) are a last-resort safety
+// (see `@/lib/utils`) is a last-resort safety
 // net, not a replacement for fixing the underlying stall: on expiry the
 // `catch` block below runs exactly as it would for any other failure
 // (status reset, toast, telemetry) instead of leaving the app stuck.
@@ -438,26 +437,11 @@ async function doSwitchToModel(params: {
 
   const { setServerStatus, setActiveModels, updateLoadingModel } =
     useAppState.getState()
-  const serverState = useLocalApiServer.getState()
-
-  // Capture whether the proxy was already up before step 2 tears it down. With
-  // auto-start disabled we still keep a manually-started server alive across a
-  // switch, but we never stand a new one up on our own for a local model.
-  const wasServerRunning = useAppState.getState().serverStatus === 'running'
-
   const isLocal = isLocalEngineProvider(providerName)
   let loadStartTs = 0
   let modelConfig: LoadableModel | undefined
 
-  // The :1337 proxy is only (re)started for cloud models, when the user opted
-  // into auto-start, or when it was already running manually. When it will stay
-  // down (local model + auto-start off + not running), never flip the status to
-  // 'pending' — otherwise the Local API Server panel briefly renders a
-  // "Starting Server" spinner before snapping back to 'stopped'.
-  const shouldStartServer =
-    !isLocal || serverState.enableOnStartup || wasServerRunning
-
-  setServerStatus(shouldStartServer ? 'pending' : 'stopped')
+  setServerStatus('stopped')
   updateLoadingModel(true)
   console.log(
     '[switchToModel] Switching to model:',
@@ -520,66 +504,9 @@ async function doSwitchToModel(params: {
       console.log('[switchToModel] Cloud provider registered:', providerName)
     }
 
-    // 5. Start the Local API Server. It's a process-wide singleton (one
-    //    proxy on serverState.serverPort shared by every provider), so a
-    //    "Server is already running" rejection here just means some other
-    //    switch/startup path already stood it up — not a load failure. This
-    //    matters most on crash recovery (ATO-244): the model above may have
-    //    just loaded successfully while a concurrent start-server call (e.g.
-    //    from another in-flight switch) wins the race, and without this
-    //    guard that benign race would surface as a spurious "Failed to load
-    //    the model" toast on top of a model that is, in fact, running fine.
-    //    Mirrors the same handling in hermes-agent.tsx / claude-code.tsx.
-    //
-    //    Gating: the :1337 proxy is a user-facing surface, not a hard
-    //    requirement for chatting with a *local* engine (llamacpp/mlx connect
-    //    to their own port directly). So when the "Auto-start" toggle is off we
-    //    leave it down for a local model — unless it was already running
-    //    (manually started), in which case we bring it back up after step 2's
-    //    stop. Cloud/remote models always need the proxy to route requests, so
-    //    they start it regardless of the toggle (see `shouldStartServer`
-    //    computed up front).
-    if (shouldStartServer) {
-      let actualPort: number | undefined
-      try {
-        const startServerCall = window.core?.api?.startServer({
-          host: serverState.serverHost,
-          port: serverState.serverPort,
-          prefix: serverState.apiPrefix,
-          apiKey: serverState.apiKey,
-          trustedHosts: serverState.trustedHosts,
-          isCorsEnabled: serverState.corsEnabled,
-          isVerboseEnabled: serverState.verboseLogs,
-          proxyTimeout: serverState.proxyTimeout,
-        }) as Promise<number> | undefined
-        actualPort = startServerCall
-          ? await taggedWithTimeout(
-              startServerCall,
-              SERVER_START_WATCHDOG_MS,
-              'Timed out waiting for the Local API Server to start.'
-            )
-          : undefined
-      } catch (startErr) {
-        const msg =
-          startErr instanceof Error ? startErr.message : String(startErr)
-        if (!msg.includes('already running')) throw startErr
-      }
-
-      console.log('[switchToModel] Server started on port:', actualPort)
-
-      if (actualPort && actualPort !== serverState.serverPort) {
-        serverState.setServerPort(actualPort)
-      }
-      setServerStatus('running')
-    } else {
-      // Local model + auto-start disabled + server wasn't running: keep the
-      // Local API Server down. The local engine already serves this chat on
-      // its own port; the :1337 proxy stays off until the user enables it.
-      setServerStatus('stopped')
-      console.log(
-        '[switchToModel] Local API Server left stopped (auto-start disabled)'
-      )
-    }
+    // 5. YoreBot chat and Agent talk directly to the local engine. Keep the
+    // optional unauthenticated Atomic proxy stopped.
+    setServerStatus('stopped')
 
     // 6. Publish active model(s). For local engines we query the engine; for
     //    cloud we mark the target model as the single active one so the UI

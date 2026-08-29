@@ -44,7 +44,7 @@ type LocalApiServerState = {
 export const useLocalApiServer = create<LocalApiServerState>()(
   persist(
     (set) => ({
-      enableOnStartup: true,
+      enableOnStartup: false,
       setEnableOnStartup: (value) => set({ enableOnStartup: value }),
       defaultModelLocalApiServer: null,
       setDefaultModelLocalApiServer: (model) =>
@@ -58,9 +58,9 @@ export const useLocalApiServer = create<LocalApiServerState>()(
       setServerPort: (value) => set({ serverPort: value }),
       apiPrefix: '/v1',
       setApiPrefix: (value) => set({ apiPrefix: value }),
-      corsEnabled: true,
+      corsEnabled: false,
       setCorsEnabled: (value) => set({ corsEnabled: value }),
-      verboseLogs: true,
+      verboseLogs: false,
       setVerboseLogs: (value) => set({ verboseLogs: value }),
       trustedHosts: [],
       addTrustedHost: (host) =>
@@ -80,7 +80,7 @@ export const useLocalApiServer = create<LocalApiServerState>()(
     {
       name: localStorageKey.settingLocalApiServer,
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<LocalApiServerState>
         if (version < 1) {
@@ -92,10 +92,16 @@ export const useLocalApiServer = create<LocalApiServerState>()(
           state.defaultModelLocalApiServer = null
         }
         if (version < 3) {
-          // v2 → v3: enableOnStartup was a dormant field defaulting to false;
-          // it now drives the Local API Server auto-start toggle and defaults
-          // to on, so opt existing users in to match the new default.
-          state.enableOnStartup = true
+          state.enableOnStartup = false
+        }
+        if (version < 4) {
+          // YoreBot chat talks directly to the local engine. Keep the optional
+          // external API fail-closed even when importing older Atomic state.
+          state.enableOnStartup = false
+          state.serverHost = '127.0.0.1'
+          state.corsEnabled = false
+          state.verboseLogs = false
+          state.trustedHosts = []
         }
         return state
       },

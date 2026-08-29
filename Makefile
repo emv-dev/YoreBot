@@ -645,8 +645,8 @@ download-llamacpp-upstream-backend-win-cpu:
 		New-Item -ItemType Directory -Path $$dir -Force | Out-Null; \
 		$$backend = 'win-cpu-x64'; \
 		$$tag = 'b10431'; \
-		$$expectedSize = 18853706; \
-		$$expectedSha256 = '631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf'; \
+		$$expectedSize = 18462983; \
+		$$expectedSha256 = 'aa16a2102de8730be6079f67f77997ca549e9a07125563571afb2fb4e810ec2c'; \
 		$$url = \"https://github.com/ggml-org/llama.cpp/releases/download/$$tag/llama-$${tag}-bin-$${backend}.zip\"; \
 		[System.IO.File]::WriteAllText(\"$$dir/version.txt\", $$tag); \
 		[System.IO.File]::WriteAllText(\"$$dir/backend.txt\", $$backend); \

@@ -51,9 +51,9 @@ jobs:
           $url = "https://github.com/ggml-org/llama.cpp/releases/download/b10431/llama-b10431-bin-win-cpu-x64.zip"
           $archive = Join-Path $env:RUNNER_TEMP "llama-b10431-bin-win-cpu-x64.zip"
           Invoke-WebRequest -Uri $url -OutFile $archive
-          if ((Get-Item $archive).Length -ne 18853706) { throw "Pinned runtime size mismatch" }
+          if ((Get-Item $archive).Length -ne 18462983) { throw "Pinned runtime size mismatch" }
           $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($hash -ne "631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf") {
+          if ($hash -ne "aa16a2102de8730be6079f67f77997ca549e9a07125563571afb2fb4e810ec2c") {
             throw "Pinned runtime SHA-256 mismatch"
           }
 

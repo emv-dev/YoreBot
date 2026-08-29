@@ -30,16 +30,16 @@ export const PINNED_BACKEND_ARTIFACTS: readonly PinnedBackendArtifact[] = [
     backend: 'win-cpu-x64',
     filename: 'llama-b10431-bin-win-cpu-x64.zip',
     url: `${LLAMACPP_DOWNLOAD_BASE}/b10431/llama-b10431-bin-win-cpu-x64.zip`,
-    size: 18_853_706,
-    sha256: '631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf',
+    size: 18_462_983,
+    sha256: 'aa16a2102de8730be6079f67f77997ca549e9a07125563571afb2fb4e810ec2c',
   },
   {
     version: 'b10431',
     backend: 'win-vulkan-x64',
     filename: 'llama-b10431-bin-win-vulkan-x64.zip',
     url: `${LLAMACPP_DOWNLOAD_BASE}/b10431/llama-b10431-bin-win-vulkan-x64.zip`,
-    size: 34_442_382,
-    sha256: '17b7e5042b1da3e870963b7495c1fadb877e79892be2cc9a6b1e3c431639c4c0',
+    size: 34_570_726,
+    sha256: 'c5f8d6a4bd451d90bb2aba3bd705bf1b02125742fc5f45623ad8d5d4444ffbe1',
   },
 ]
 
