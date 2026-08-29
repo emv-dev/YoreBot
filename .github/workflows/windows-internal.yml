@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -216,6 +217,14 @@ jobs:
             Copy-Item $installer.FullName (Join-Path "artifacts" $installer.Name)
           }
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: YoreBot-Windows-unsigned-internal
+          path: artifacts/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Smoke fresh NSIS install and uninstall
         shell: pwsh
         run: |
@@ -225,13 +234,6 @@ jobs:
           }
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: YoreBot-Windows-unsigned-internal
-          path: artifacts/*.exe
-          if-no-files-found: error
-          retention-days: 7
 
   pinned-model-smoke:
     if: github.event_name == 'workflow_dispatch'
@@ -245,3 +247,31 @@ jobs:
         run: |
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot
+
+  installer-reuse-diagnostic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download prior unsigned installer
+        uses: actions/download-artifact@v4
+        with:
+          name: YoreBot-Windows-unsigned-internal
+          path: diagnostic-installer
+          github-token: ${{ github.token }}
+          repository: emv-dev/YoreBot
+          run-id: 33232258704
+
+      - name: Diagnose owned YoreBot launch
+        shell: pwsh
+        run: |
+          $installers = @(
+            Get-ChildItem "diagnostic-installer" -Filter "*.exe" -File -Recurse
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one diagnostic NSIS installer, found $($installers.Count)"
+          }
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-diagnostic-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot

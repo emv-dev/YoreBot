@@ -45,6 +45,8 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     'Get-ProcessesAtExactPath',
     'Stop-Process -Id',
     '-WorkingDirectory $installRoot',
+    '-RedirectStandardOutput $appStdoutPath',
+    '-RedirectStandardError $appStderrPath',
     'Write-LaunchDiagnostics',
     'YoreBot exited during startup with exit code',
     "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\YoreBot'",
@@ -97,14 +99,20 @@ test('model smoke verifies both downloads before an exact outbound block and loo
 
 test('heavy model smoke is manual-only while installer smoke stays on PR builds', () => {
   const internal = read('.github/workflows/windows-internal.yml')
+  const installerUpload = internal.indexOf('- uses: actions/upload-artifact@v4')
+  const installerSmoke = internal.indexOf('- name: Smoke fresh NSIS install and uninstall')
 
   assert.match(internal, /^\s*pull_request:\s*$/m)
   assert.match(internal, /test-windows-installer\.ps1/)
   assert.match(internal, /node --test scripts\/tests\/windows-acceptance-contracts\.test\.mjs/)
   assert.match(internal, /test-windows-pinned-model\.ps1 -ValidateManifestOnly/)
+  assert.ok(installerUpload >= 0 && installerUpload < installerSmoke)
+  assert.match(internal.slice(installerUpload, installerSmoke), /if: always\(\)/)
   assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)
   assert.match(internal, /^\s{4}if: github\.event_name == 'workflow_dispatch'\s*$/m)
   assert.match(internal, /^\s*\.\/scripts\/test-windows-pinned-model\.ps1\b/m)
+  assert.match(internal, /^\s{2}installer-reuse-diagnostic:\s*$/m)
+  assert.match(internal, /run-id: 33232258704/)
   assert.equal(
     existsSync(resolve(root, '.github/workflows/windows-pinned-model-smoke.yml')),
     false

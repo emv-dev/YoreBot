@@ -75,12 +75,21 @@ function Start-SiblingSentinel {
 function Write-LaunchDiagnostics {
     param(
         [datetime] $StartedAt,
-        [System.Diagnostics.Process] $Process
+        [System.Diagnostics.Process] $Process,
+        [string] $StdoutPath,
+        [string] $StderrPath
     )
 
     $Process.Refresh()
     $exitCode = if ($Process.HasExited) { $Process.ExitCode } else { 'still running' }
     Write-Host "YoreBot startup diagnostic exit code: $exitCode"
+
+    foreach ($stream in @($StdoutPath, $StderrPath)) {
+        if (Test-Path -LiteralPath $stream -PathType Leaf) {
+            Write-Host "YoreBot process output: $stream"
+            Get-Content -LiteralPath $stream -Tail 120 -ErrorAction SilentlyContinue
+        }
+    }
 
     $logRoot = Join-Path $env:APPDATA 'YoreBot/logs'
     if (Test-Path -LiteralPath $logRoot -PathType Container) {
@@ -171,14 +180,22 @@ try {
     # test. Stop only that exact installed path, then observe one owned launch.
     Stop-ExactProcesses -Path $appPath
     $launchStartedAt = Get-Date
+    $appStdoutPath = Join-Path $workRootFull 'YoreBot.stdout.log'
+    $appStderrPath = Join-Path $workRootFull 'YoreBot.stderr.log'
     $launchedApp = Start-Process `
         -FilePath $appPath `
         -WorkingDirectory $installRoot `
+        -RedirectStandardOutput $appStdoutPath `
+        -RedirectStandardError $appStderrPath `
         -PassThru
     Start-Sleep -Seconds 8
     $launchedApp.Refresh()
     if ($launchedApp.HasExited) {
-        Write-LaunchDiagnostics -StartedAt $launchStartedAt -Process $launchedApp
+        Write-LaunchDiagnostics `
+            -StartedAt $launchStartedAt `
+            -Process $launchedApp `
+            -StdoutPath $appStdoutPath `
+            -StderrPath $appStderrPath
         throw "YoreBot exited during startup with exit code $($launchedApp.ExitCode)"
     }
     $liveApp = Get-Process -Id $launchedApp.Id -ErrorAction Stop
