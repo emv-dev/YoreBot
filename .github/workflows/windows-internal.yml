@@ -3,6 +3,15 @@ name: YoreBot Windows internal build
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      hardware_profile:
+        description: Ordinary runs here; High-end requires a future Windows runner with 32GB+ RAM and enough free disk
+        required: true
+        default: ordinary-16gb
+        type: choice
+        options:
+          - ordinary-16gb
+          - high-end-32gb
 
 permissions:
   contents: read
@@ -57,7 +66,23 @@ jobs:
               throw "PowerShell syntax errors in $script"
             }
           }
-          ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly
+          foreach ($profile in @('ordinary-16gb', 'high-end-32gb')) {
+            ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly -HardwareProfile $profile
+          }
+          foreach ($profile in @('unsupported-4gb', 'unknown')) {
+            try {
+              ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly -HardwareProfile $profile
+              throw "Fail-closed profile '$profile' unexpectedly selected a model"
+            } catch {
+              $expected = if ($profile -eq 'unknown') {
+                'Hardware profile memory is unknown'
+              } else {
+                'No pinned model fits hardware profile'
+              }
+              if (-not $_.Exception.Message.Contains($expected)) { throw }
+              Write-Host "Fail-closed profile passed: profile=$profile result=unsupported"
+            }
+          }
 
       - name: Install dependencies
         shell: pwsh
@@ -278,5 +303,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
+          $profile = '${{ inputs.hardware_profile }}'
+          if ([string]::IsNullOrWhiteSpace($profile)) { $profile = 'ordinary-16gb' }
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot -RunDownloadsAgentAcceptance
+          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot -HardwareProfile $profile -RunDownloadsAgentAcceptance

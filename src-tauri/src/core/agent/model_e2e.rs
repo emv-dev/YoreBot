@@ -24,8 +24,10 @@ use super::test_support::{
 };
 use super::types::{AgentEvent, ApprovalRequest, ToolCallPayload, ToolStatus};
 
-const REQUIRED_MODEL_ID: &str = "Qwen3.5-9B-Q4_K_M";
-const REQUIRED_MODEL_FILENAME: &str = "Qwen3.5-9B-Q4_K_M.gguf";
+const PINNED_ACCEPTANCE_MODELS: &[(&str, &str)] = &[
+    ("Qwen3.5-9B-Q4_K_M", "Qwen3.5-9B-Q4_K_M.gguf"),
+    ("Qwen3.8-27B-Q4_K_M", "Qwen3.8-27B-Q4_K_M.gguf"),
+];
 const REQUIRED_BACKEND_BUILD: &str = "10431";
 const DOWNLOADS_SKILL: &str = "downloads-organizer";
 const DOWNLOADS_AGENT_COMPLETION_DEADLINE: Duration = PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE;
@@ -76,7 +78,8 @@ impl LiveHarness {
     async fn start() -> Self {
         let server_path = required_env_path("ATOMIC_AGENT_E2E_LLAMA_SERVER");
         let model_path = required_env_path("ATOMIC_AGENT_E2E_MODEL");
-        assert_target_model(&model_path);
+        let model_id = required_env_string("ATOMIC_AGENT_E2E_MODEL_ID");
+        assert_target_model(&model_path, &model_id);
         assert_server_version(&server_path);
 
         let workspace = TestWorkspace::new();
@@ -95,7 +98,7 @@ impl LiveHarness {
         let timeout = Duration::from_secs(env_u64("ATOMIC_AGENT_E2E_TIMEOUT_SECS", 900));
         let stdout_log = workspace.path().join("llama-server.stdout.log");
         let stderr_log = workspace.path().join("llama-server.stderr.log");
-        print_provenance(&server_path, &model_path);
+        print_provenance(&server_path, &model_path, &model_id);
         let stdout = File::create(&stdout_log).expect("create llama-server stdout log");
         let stderr = File::create(&stderr_log).expect("create llama-server stderr log");
         let child = Command::new(&server_path)
@@ -132,7 +135,7 @@ impl LiveHarness {
         let client = LlamaServerClient::new(&LlamaSessionTarget {
             port: i32::from(port),
             api_key: String::new(),
-            model_id: REQUIRED_MODEL_ID.into(),
+            model_id,
             has_vision: false,
             backend: LlamaBackend::LlamacppUpstream,
         })
@@ -199,6 +202,19 @@ fn live_acceptance_uses_production_deadline_without_slowing_unit_tests() {
 }
 
 #[test]
+fn live_acceptance_restricts_models_to_exact_product_pins() {
+    assert_eq!(
+        pinned_model_filename("Qwen3.5-9B-Q4_K_M"),
+        Some("Qwen3.5-9B-Q4_K_M.gguf")
+    );
+    assert_eq!(
+        pinned_model_filename("Qwen3.8-27B-Q4_K_M"),
+        Some("Qwen3.8-27B-Q4_K_M.gguf")
+    );
+    assert_eq!(pinned_model_filename("unreviewed-model"), None);
+}
+
+#[test]
 fn undo_summary_accepts_current_paths_and_restoration_semantics() {
     let events = [AgentEvent::AssistantReply {
         text: "Moved quarterly-report.pdf back to root, mystery.download untouched".into(),
@@ -209,7 +225,7 @@ fn undo_summary_accepts_current_paths_and_restoration_semantics() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires pinned upstream b10431 and Qwen3.5-9B Q4_K_M"]
+#[ignore = "requires pinned upstream b10431 and an exact YoreBot Qwen Q4_K_M pin"]
 async fn downloads_agent_acceptance() {
     let mut harness = LiveHarness::start().await;
     harness
@@ -791,11 +807,26 @@ fn required_env_path(name: &str) -> PathBuf {
     path
 }
 
-fn assert_target_model(path: &Path) {
+fn required_env_string(name: &str) -> String {
+    let value = std::env::var(name)
+        .unwrap_or_else(|_| panic!("{name} is required for downloads_agent_acceptance"));
+    assert!(!value.trim().is_empty(), "{name} must not be empty");
+    value
+}
+
+fn pinned_model_filename(model_id: &str) -> Option<&'static str> {
+    PINNED_ACCEPTANCE_MODELS
+        .iter()
+        .find_map(|(allowed_id, filename)| (*allowed_id == model_id).then_some(*filename))
+}
+
+fn assert_target_model(path: &Path, model_id: &str) {
+    let expected_filename = pinned_model_filename(model_id)
+        .unwrap_or_else(|| panic!("unsupported pinned acceptance model id: {model_id}"));
     assert_eq!(
         path.file_name().and_then(|name| name.to_str()),
-        Some(REQUIRED_MODEL_FILENAME),
-        "ATOMIC_AGENT_E2E_MODEL must be exact pinned {REQUIRED_MODEL_FILENAME}; got {}",
+        Some(expected_filename),
+        "ATOMIC_AGENT_E2E_MODEL must match exact pinned {model_id}; got {}",
         path.display()
     );
 }
@@ -844,7 +875,7 @@ fn reserve_loopback_port() -> u16 {
     listener.local_addr().expect("reserved address").port()
 }
 
-fn print_provenance(server_path: &Path, model_path: &Path) {
+fn print_provenance(server_path: &Path, model_path: &Path, model_id: &str) {
     let version = version_output(server_path)
         .unwrap_or_else(|error| format!("<version probe failed: {error}>"));
     let version_file = server_path
@@ -857,7 +888,7 @@ fn print_provenance(server_path: &Path, model_path: &Path) {
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_else(|| "<not found>".into());
     eprintln!(
-        "Downloads Agent acceptance provenance:\nmodel_id={REQUIRED_MODEL_ID}\nmodel_path={}\nllama_server={}\nllama_server_version={}\nversion_file={:?}\nversion_file_contents={}",
+        "Downloads Agent acceptance provenance:\nmodel_id={model_id}\nmodel_path={}\nllama_server={}\nllama_server_version={}\nversion_file={:?}\nversion_file_contents={}",
         model_path.display(),
         server_path.display(),
         version.trim(),

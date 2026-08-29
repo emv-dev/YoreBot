@@ -309,6 +309,27 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Reuse one fail-closed Windows model acceptance ritual
+- **Context:** Issue #10 needs the automatic 32 GB model path to run the same
+  Downloads Agent proof as the already-proven ordinary path, while the standard
+  public Windows runner cannot hold the 18,973,870,432-byte high-end model.
+- **Decision:** Parameterize the existing manual ritual by a nominal hardware
+  profile, select the largest exact pinned model with the product's 70 percent
+  fit invariant, and whitelist both product model ids in the unchanged Rust
+  Agent harness. Before creating its workspace or downloading anything, verify
+  that the selected model fits actual Windows RAM and that the target drive has
+  space for the exact model, runtime archive/extraction, and bounded workspace
+  headroom. Keep unsupported and unknown profiles fail-closed.
+- **Consequences:** The ordinary 9B proof remains runnable on standard Windows
+  CI. The high-end 27B path is packaged but remains unproven until a future
+  Windows runner has at least 32 GB RAM and sufficient free disk; no current
+  workflow run may claim high-end support from synthetic selection alone.
+- **Owner:** team.
+- **Links:** [Issue #10](https://github.com/emv-dev/YoreBot/issues/10),
+  [`scripts/test-windows-pinned-model.ps1`](scripts/test-windows-pinned-model.ps1),
+  [`src-tauri/src/core/agent/model_e2e.rs`](src-tauri/src/core/agent/model_e2e.rs),
+  [`.github/workflows/windows-internal.yml`](.github/workflows/windows-internal.yml).
+
 ### 2026-08-29 — Keep generated content and hidden catalogs offline
 - **Context:** Assistant Markdown, Mermaid image directives, executable HTML
   previews, and statically imported upstream catalog stores could make network
