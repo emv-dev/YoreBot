@@ -97,6 +97,15 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   assert.doesNotMatch(script, /taskkill/i)
   assert.doesNotMatch(script, /if\s*\(\$launchedApp\.ExitCode/i)
   assert.doesNotMatch(script, /exited cleanly/i)
+  const backendReadyPoll = script.slice(
+    script.indexOf("$backendReady = 'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64'"),
+    script.indexOf('New-Item -ItemType Directory -Path $installSibling, $dataSibling')
+  )
+  assert.match(backendReadyPoll, /\$backendReadyDeadline = \(Get-Date\)\.AddSeconds\(60\)/)
+  assert.match(backendReadyPoll, /\$launchedApp\.Refresh\(\)/)
+  assert.match(backendReadyPoll, /if \(\$launchedApp\.HasExited\)/)
+  assert.match(backendReadyPoll, /Start-Sleep -Milliseconds 500/)
+  assert.match(backendReadyPoll, /while \(\(Get-Date\) -lt \$backendReadyDeadline\)/)
   assert.ok(
     script.indexOf('Stop-ExactProcesses -Path $appPath') <
       script.indexOf('$launchedApp = Start-Process')
