@@ -1,3 +1,5 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod access;
 pub mod agent;
 pub mod app;
 pub mod artifact;

@@ -211,6 +211,10 @@ async fn agent_records_completion_tokens_then_gates_the_next_step() {
             ..
         }
     )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::AssistantReply { text } if text.contains("Access in the sidebar")
+    )));
     assert_eq!(finished_reason(&events), Some(("quota", 1)));
 }
 

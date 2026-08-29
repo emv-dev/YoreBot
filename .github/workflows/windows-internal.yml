@@ -217,13 +217,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
-          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
           yarn build:web
           cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::access::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::grammar::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
