@@ -224,6 +224,7 @@ jobs:
           yarn build:web
           cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::grammar::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::filesystem_move_is_non_overwriting_and_reversible -- --test-threads=1

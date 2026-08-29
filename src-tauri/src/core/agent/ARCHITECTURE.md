@@ -41,7 +41,9 @@ MCP tools, window control, and filesystem watchers are deferred.
 - The variable tail contains loaded rare descriptors, the conversation, an
   optional loop notice, and the response marker.
 - Tool output is constrained by an array-only GBNF root. One tool call is a
-  one-element array; a step may contain up to eight calls at runtime.
+  one-element array; a step may contain up to eight calls at runtime. The
+  grammar permits at most one terminal call and only in final position; the
+  runtime validator repeats that check as defense in depth.
 - The prompt catalog and grammar tool-name set must remain identical.
 
 ### Loop and execution
@@ -63,7 +65,7 @@ valid only as the final call and executes after all preceding calls finish.
 
 ### Safety controls already present
 
-- Array-only GBNF tool grammar.
+- Array-only GBNF tool grammar with terminal position and cardinality bounds.
 - Runtime batch-size and step limits.
 - Resource-class validation.
 - Repeat, no-progress, and wandering loop detection.

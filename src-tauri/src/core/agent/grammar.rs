@@ -9,8 +9,9 @@
 //! Root is **array-only** (`root ::= tool-call-array`): every completion starts
 //! with `[` so the model cannot fall into the single-object form via
 //! first-token bias even when it only needs one call. A solo step is the model
-//! emitting `[{...}]`. Up to 16 calls per completion (the runtime also clamps
-//! via `DEFAULT_MAX_PARALLEL_TOOL_CALLS`).
+//! emitting `[{...}]`. Up to 16 calls per completion are allowed, with at most
+//! one terminal call and only in final position (the runtime also validates the
+//! same contract and clamps via `DEFAULT_MAX_PARALLEL_TOOL_CALLS`).
 
 use std::fmt::Write;
 
@@ -204,7 +205,7 @@ const STATIC_TOOL_GRAMMARS: &[ToolGrammar] = &[
     },
 ];
 
-const JSON_RULES: &str = r##"tool-call-array ::= "[" ws tool-call ( ws "," ws tool-call ){0,15} ws "]"
+const JSON_RULES: &str = r##"tool-call-array ::= "[" ws ( terminal-call | non-terminal-call ( ws "," ws non-terminal-call ){0,14} ( ws "," ws ( non-terminal-call | terminal-call ) )? ) ws "]"
 call-prefix ::= "{" ws "\"tool\"" ws ":" ws
 args-prefix ::= ws "," ws "\"args\"" ws ":" ws
 call-suffix ::= ws "}"
@@ -324,8 +325,14 @@ pub(crate) fn tool_call_grammar_for_catalog(
                 .any(|descriptor| descriptor.name == grammar.name)
         })
         .collect::<Vec<_>>();
-    let mut call_rules = active_static
+    let mut non_terminal_call_rules = active_static
         .iter()
+        .filter(|grammar| !matches!(grammar.name, "reply" | "finish"))
+        .map(|grammar| format!("{}-call", grammar.rule))
+        .collect::<Vec<_>>();
+    let terminal_call_rules = active_static
+        .iter()
+        .filter(|grammar| matches!(grammar.name, "reply" | "finish"))
         .map(|grammar| format!("{}-call", grammar.rule))
         .collect::<Vec<_>>();
     let skill_view_enabled = tool_descriptors
@@ -335,11 +342,16 @@ pub(crate) fn tool_call_grammar_for_catalog(
         .iter()
         .any(|descriptor| descriptor.name == "skill.run_script");
     if !skill_names.is_empty() && skill_view_enabled {
-        call_rules.insert(1, "skill-view-call".into());
+        non_terminal_call_rules.insert(1, "skill-view-call".into());
     }
     if !skill_names.is_empty() && skill_script_enabled {
-        call_rules.insert(1, "skill-run-script-call".into());
+        non_terminal_call_rules.insert(1, "skill-run-script-call".into());
     }
+    let call_rules = non_terminal_call_rules
+        .iter()
+        .chain(terminal_call_rules.iter())
+        .cloned()
+        .collect::<Vec<_>>();
 
     let root = if profile == AgentModelProfile::Gemma4Think {
         "channel-prelude tool-call-array"
@@ -347,8 +359,10 @@ pub(crate) fn tool_call_grammar_for_catalog(
         "tool-call-array"
     };
     let mut grammar = format!(
-        "root ::= {root}\ntool-call ::= {}\n",
-        call_rules.join(" | ")
+        "root ::= {root}\ntool-call ::= {}\nnon-terminal-call ::= {}\nterminal-call ::= {}\n",
+        call_rules.join(" | "),
+        non_terminal_call_rules.join(" | "),
+        terminal_call_rules.join(" | "),
     );
     for tool in active_static {
         writeln!(
@@ -513,6 +527,28 @@ mod tests {
         let grammar = grammar_with_skills(&[]);
         assert!(grammar.contains(r#""\"reply\"""#));
         assert!(grammar.contains(r#""\"finish\"""#));
+    }
+
+    #[test]
+    fn terminal_calls_are_structurally_single_and_final() {
+        let grammar = grammar_with_skills(&[]);
+        let rule = |name: &str| {
+            grammar
+                .lines()
+                .find(|line| line.starts_with(&format!("{name} ::=")))
+                .unwrap_or_else(|| panic!("missing {name} rule"))
+        };
+
+        assert_eq!(
+            rule("tool-call-array"),
+            r#"tool-call-array ::= "[" ws ( terminal-call | non-terminal-call ( ws "," ws non-terminal-call ){0,14} ( ws "," ws ( non-terminal-call | terminal-call ) )? ) ws "]""#
+        );
+        assert!(!rule("non-terminal-call").contains("reply-call"));
+        assert!(!rule("non-terminal-call").contains("finish-call"));
+        assert_eq!(
+            rule("terminal-call"),
+            "terminal-call ::= reply-call | finish-call"
+        );
     }
 
     #[test]

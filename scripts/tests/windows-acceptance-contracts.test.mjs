@@ -171,6 +171,7 @@ test('manual model ritual exercises the real Downloads Agent contract', () => {
   assert.match(harness, /detect_model_profile/)
   assert.match(harness, /build_stable_prefix_for_profile/)
   assert.doesNotMatch(harness, /"--threads"/)
+  assert.match(workflow, /core::agent::grammar::tests::/)
   assert.ok(
     script.indexOf('$PSNativeCommandUseErrorActionPreference = $true') <
       script.indexOf('downloads_agent_acceptance')

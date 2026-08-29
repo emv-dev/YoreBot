@@ -321,6 +321,8 @@ Append-only. Newest at top. Each entry follows this shape:
   production completion deadline while retaining fast scripted unit deadlines.
   In tool paths, represent the primary workspace as `.` and children as relative
   paths instead of asking the model to reproduce a printed OS-specific path.
+  Constrain the generated batch to at most one terminal call, final-only, while
+  retaining the same runtime validation as defense in depth.
 - **Consequences:** Pull requests retain lightweight static and compile gates.
   A dispatched run gives pass/fail end-to-end evidence for the bounded
   Downloads task without making speed, GUI, or broader Agent claims.

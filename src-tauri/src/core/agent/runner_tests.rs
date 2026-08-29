@@ -733,6 +733,10 @@ async fn misplaced_terminal_and_empty_reply_are_repaired() {
             {"tool":"reply","args":{"text":"too early"}},
             {"tool":"os.fs.read","args":{"path":"missing.txt"}}
         ]"#,
+        r#"[
+            {"tool":"reply","args":{"text":"first terminal"}},
+            {"tool":"finish","args":{"summary":"second terminal"}}
+        ]"#,
         r#"[{"tool":"reply","args":{"text":"   "}}]"#,
     ] {
         let workspace = TestWorkspace::new();
