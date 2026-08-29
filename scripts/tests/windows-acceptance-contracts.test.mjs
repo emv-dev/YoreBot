@@ -183,6 +183,10 @@ test('manual model ritual exercises the real Downloads Agent contract', () => {
   )
   assert.match(skill, /Do not mutate anything in the same step as the proposal/)
   assert.match(skill, /Every mutation must reach YoreBot's approval dialog/)
+  assert.match(skill, /Use `\.` for the connected root and relative child paths/)
+  assert.match(harness, /Call `os\.fs\.list` exactly once/)
+  assert.match(harness, /assert_tool_string_arg\(&plan, "os\.fs\.list", "path", "\."\)/)
+  assert.match(harness, /Use only these relative paths: `quarterly-report\.pdf`/)
   assert.doesNotMatch(
     `${script}\n${harness}\n${workflow}`,
     /tokens?\s*(\/|per)\s*second|throughput|benchmark/i

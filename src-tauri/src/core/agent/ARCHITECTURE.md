@@ -170,7 +170,9 @@ The test copies the actual bundled `downloads-organizer` skill into an isolated
 registry and exposes only the YoreBot catalog. One persisted session must plan
 without mutation, apply exactly approved non-overwriting moves, summarize disk
 state, and undo one move. A separate denied session must leave its fixture
-unchanged. Assertions cover calls, exact approval paths, replies, full fixture
+unchanged. Tool paths use `.` for the primary Downloads root and relative child
+paths so the model never has to reconstruct a platform-specific absolute path.
+Assertions cover calls, exact approval paths, replies, full fixture
 snapshots, and terminal reasons. Failures print bounded events and server logs;
 the RAII guard terminates only its owned child process.
 

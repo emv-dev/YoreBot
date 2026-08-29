@@ -218,7 +218,7 @@ async fn downloads_agent_acceptance() {
     let plan = harness
         .run_main(
             "downloads-plan",
-            "Inventory the connected Downloads folder first. After observing the listing, propose exactly one change: create Documents and move quarterly-report.pdf to Documents/quarterly-report.pdf. Leave mystery.download untouched because its type is uncertain. Do not mutate anything this turn. Reply with the exact source and destination paths and wait for acceptance.",
+            "Call `os.fs.list` exactly once with `{\"path\":\".\"}` to inventory the connected Downloads folder. After observing that result, propose exactly one change: create `Documents` and move `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Leave `mystery.download` untouched because its type is uncertain. Do not mutate anything this turn. Use only relative paths, reply with the exact source and destination paths, and wait for acceptance.",
             Some(DOWNLOADS_SKILL),
             &plan_approval,
             5,
@@ -229,6 +229,7 @@ async fn downloads_agent_acceptance() {
     assert_no_mutating_tools(&plan);
     assert_eq!(count_tool(&plan, "os.fs.list"), 1, "events: {plan:#?}");
     assert_singleton_tool(&plan, "os.fs.list");
+    assert_tool_string_arg(&plan, "os.fs.list", "path", ".");
     assert_tool_summary_mentions(
         &plan,
         "os.fs.list",
@@ -249,7 +250,7 @@ async fn downloads_agent_acceptance() {
     let apply = harness
         .run_main(
             "downloads-apply",
-            "I explicitly accept that exact proposal. Create Documents, then move quarterly-report.pdf to Documents/quarterly-report.pdf. Do not move mystery.download. After both accepted actions succeed, list Downloads and Documents, then reply with the exact moved and untouched paths.",
+            "I explicitly accept that exact proposal. Use only these relative paths: `quarterly-report.pdf`, `Documents`, and `Documents/quarterly-report.pdf`. Create `Documents`, then move `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not move `mystery.download`. After both accepted actions succeed, list `.` and `Documents`, then reply with the exact moved and untouched paths.",
             None,
             &mutation_approval,
             8,
@@ -259,6 +260,14 @@ async fn downloads_agent_acceptance() {
     assert_catalog_is_restricted(&apply);
     assert_eq!(count_tool(&apply, "os.fs.mkdir"), 1, "events: {apply:#?}");
     assert_eq!(count_tool(&apply, "os.fs.move"), 1, "events: {apply:#?}");
+    assert_tool_string_arg(&apply, "os.fs.mkdir", "path", "Documents");
+    assert_tool_string_arg(&apply, "os.fs.move", "source", "quarterly-report.pdf");
+    assert_tool_string_arg(
+        &apply,
+        "os.fs.move",
+        "destination",
+        "Documents/quarterly-report.pdf",
+    );
     assert_tool_status(&apply, "os.fs.mkdir", ToolStatus::Ok);
     assert_tool_status(&apply, "os.fs.move", ToolStatus::Ok);
     let canonical_downloads = fs::canonicalize(&harness.downloads).expect("canonical Downloads");
@@ -292,7 +301,7 @@ async fn downloads_agent_acceptance() {
     let undo = harness
         .run_main(
             "downloads-undo",
-            "Undo the one successful move from this same session: move Documents/quarterly-report.pdf back to quarterly-report.pdf. Do not remove Documents or touch mystery.download. After the approved reverse move succeeds, list both locations and reply with the exact restored and untouched paths.",
+            "Undo the one successful move from this same session using only relative paths: move `Documents/quarterly-report.pdf` back to `quarterly-report.pdf`. Do not remove `Documents` or touch `mystery.download`. After the approved reverse move succeeds, list `.` and `Documents`, then reply with the exact restored and untouched paths.",
             None,
             &undo_approval,
             6,
@@ -302,6 +311,13 @@ async fn downloads_agent_acceptance() {
     assert_catalog_is_restricted(&undo);
     assert_eq!(count_tool(&undo, "os.fs.move"), 1, "events: {undo:#?}");
     assert_eq!(count_tool(&undo, "os.fs.mkdir"), 0, "events: {undo:#?}");
+    assert_tool_string_arg(
+        &undo,
+        "os.fs.move",
+        "source",
+        "Documents/quarterly-report.pdf",
+    );
+    assert_tool_string_arg(&undo, "os.fs.move", "destination", "quarterly-report.pdf");
     assert_tool_status(&undo, "os.fs.move", ToolStatus::Ok);
     assert_allow_once_requests(
         &undo_approval.requests(),
@@ -357,7 +373,7 @@ async fn run_denied_scenario(harness: &mut LiveHarness) {
         harness.model_profile,
         &mut session,
         "downloads-denied",
-        "This exact plan was already reviewed and I explicitly accept it: move denied-report.pdf to Documents/denied-report.pdf. Call os.fs.move once now. The action will be denied; do not retry it or create anything, and reply that both denied-report.pdf and leave-alone.bin stayed where they were.",
+        "This exact plan was already reviewed and I explicitly accept it: move `denied-report.pdf` to `Documents/denied-report.pdf`. Use only those relative paths and call `os.fs.move` exactly once now. The action will be denied; do not retry it or create anything, and reply that both `denied-report.pdf` and `leave-alone.bin` stayed where they were.",
         Some(DOWNLOADS_SKILL),
         &approval,
         4,
@@ -368,6 +384,13 @@ async fn run_denied_scenario(harness: &mut LiveHarness) {
     assert_catalog_is_restricted(&events);
     assert_eq!(count_tool(&events, "os.fs.move"), 1, "events: {events:#?}");
     assert_eq!(count_tool(&events, "os.fs.mkdir"), 0, "events: {events:#?}");
+    assert_tool_string_arg(&events, "os.fs.move", "source", "denied-report.pdf");
+    assert_tool_string_arg(
+        &events,
+        "os.fs.move",
+        "destination",
+        "Documents/denied-report.pdf",
+    );
     assert_tool_status(&events, "os.fs.move", ToolStatus::Denied);
     let requests = approval.requests();
     assert_eq!(requests.len(), 1, "events: {events:#?}");
@@ -650,6 +673,19 @@ fn count_tool(events: &[AgentEvent], tool: &str) -> usize {
         .into_iter()
         .filter(|call| call.tool == tool)
         .count()
+}
+
+fn assert_tool_string_arg(events: &[AgentEvent], tool: &str, field: &str, expected: &str) {
+    let calls = parsed_calls(events)
+        .into_iter()
+        .filter(|call| call.tool == tool)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1, "expected one {tool} call: {events:#?}");
+    assert_eq!(
+        calls[0].args.get(field).and_then(serde_json::Value::as_str),
+        Some(expected),
+        "{tool}.{field} must use the exact relative path: {events:#?}"
+    );
 }
 
 fn assert_singleton_tool(events: &[AgentEvent], tool: &str) {

@@ -416,7 +416,7 @@ pub const ITERATION_ONE_TOOLS: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "os.fs.list",
-        summary: "List one connected directory without changing it.",
+        summary: "List one connected directory without changing it. Omit path or use `.` for the primary directory; use relative child paths.",
         args_schema: r#"{ path?: string }"#,
         tier: ToolTier::Frequent,
         examples: &[],
@@ -701,7 +701,8 @@ pub fn format_workspace(
 ) -> String {
     let mut lines = vec![
         format!("primary: {}", primary_root.display()),
-        "Relative paths resolve against primary.".to_string(),
+        "Use `.` for the primary working directory in tool paths; never copy or reconstruct the printed primary path. Relative child paths resolve against primary."
+            .to_string(),
     ];
     let mut seen = std::collections::HashSet::new();
     let external = editable_roots
@@ -929,11 +930,36 @@ mod tests {
         );
 
         assert!(full.contains("### workspace\nprimary: /tmp/project"));
-        assert!(full.contains("Relative paths resolve against primary."));
+        assert!(full.contains(
+            "Use `.` for the primary working directory in tool paths; never copy or reconstruct the printed primary path. Relative child paths resolve against primary."
+        ));
         assert!(full.contains("external (CAN EDIT; use explicit paths):\n- /tmp/Desktop"));
         assert!(full.contains("external (VIEW ONLY; use explicit paths):\n- /tmp/Downloads"));
         assert!(full.contains("issue the real filesystem call so access can be requested"));
         assert_eq!(full.matches("- /tmp/Desktop").count(), 1);
+    }
+
+    #[test]
+    fn workspace_tool_paths_never_require_reconstructing_platform_paths() {
+        for primary in [
+            PathBuf::from("/Users/grandma/Downloads"),
+            PathBuf::from(r"C:\Users\Grandma\Downloads"),
+        ] {
+            let workspace = format_workspace(&primary, std::slice::from_ref(&primary), &[]);
+            assert!(workspace.contains(&format!("primary: {}", primary.display())));
+            assert!(workspace.contains("Use `.` for the primary working directory in tool paths"));
+            assert!(workspace.contains("never copy or reconstruct the printed primary path"));
+        }
+    }
+
+    #[test]
+    fn yorebot_list_descriptor_documents_primary_relative_path() {
+        let descriptor = ITERATION_ONE_TOOLS
+            .iter()
+            .find(|descriptor| descriptor.name == "os.fs.list")
+            .expect("YoreBot list descriptor");
+        assert!(descriptor.summary.contains("Omit path or use `.`"));
+        assert!(descriptor.summary.contains("relative child paths"));
     }
 
     #[test]

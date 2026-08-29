@@ -20,7 +20,7 @@ Organize only the Downloads folder the user explicitly connects.
 
 ## Contract
 
-1. Inventory with `os.fs.list`. Use `os.fs.glob` only when the first listing is insufficient.
+1. Inventory with `os.fs.list`. Use `.` for the connected root and relative child paths; never copy or reconstruct the displayed absolute working-directory path. Use `os.fs.glob` only when the first listing is insufficient.
 2. Propose a short plan naming every new folder and every source → destination move. Do not mutate anything in the same step as the proposal.
 3. Wait for the user to accept the plan.
 4. Create only accepted folders with `os.fs.mkdir`, then move accepted items one at a time with `os.fs.move`. Every mutation must reach YoreBot's approval dialog.
