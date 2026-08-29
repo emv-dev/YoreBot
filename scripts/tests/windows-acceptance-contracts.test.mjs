@@ -34,7 +34,7 @@ const multilinePwshBlocks = (source) => {
   return blocks.filter(({ statements }) => statements.length > 1)
 }
 
-test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () => {
+test('ordinary and high-end Windows models and CPU runtime remain exactly pinned', () => {
   const models = read('web-app/src/constants/yorebot-models.ts')
   const backends = read('extensions/llamacpp-upstream-extension/src/backend.ts')
 
@@ -50,6 +50,17 @@ test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () =
   }
 
   for (const value of [
+    "id: 'Qwen3.8-27B-Q4_K_M'",
+    "repository: 'ggml-org/Qwen3.8-27B-GGUF'",
+    "revision: '0669b98607d47046c7c2b3f801011d54a08cfccf'",
+    "filename: 'Qwen3.8-27B-Q4_K_M.gguf'",
+    'sizeBytes: 18_973_870_432',
+    "sha256: '31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34'",
+  ]) {
+    assert.ok(models.includes(value), `missing high-end model pin: ${value}`)
+  }
+
+  for (const value of [
     "version: 'b10431'",
     "backend: 'win-cpu-x64'",
     "filename: 'llama-b10431-bin-win-cpu-x64.zip'",
@@ -58,6 +69,60 @@ test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () =
   ]) {
     assert.ok(backends.includes(value), `missing backend pin: ${value}`)
   }
+})
+
+test('manual Windows proof selects the largest exact fit and fails before downloads', () => {
+  const script = read('scripts/test-windows-pinned-model.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  for (const value of [
+    "'ordinary-16gb' { 16 * 1024 }",
+    "'high-end-32gb' { 32 * 1024 }",
+    "'unsupported-4gb' { 4 * 1024 }",
+    "'unknown' { 0 }",
+    'No pinned model fits hardware profile',
+    'Hardware profile memory is unknown',
+    'Qwen3.5-9B-Q4_K_M',
+    'Qwen3.8-27B-Q4_K_M',
+  ]) {
+    assert.ok(script.includes(value), `missing profile guard: ${value}`)
+  }
+
+  const profile = script.indexOf('$profileMemoryMb = switch ($HardwareProfile)')
+  const selection = script.indexOf('$model = @(')
+  const workRoot = script.indexOf('$workRootFull =')
+  const actualMemory = script.indexOf('$actualMemoryBytes = Get-ActualPhysicalMemoryBytes')
+  const freeDisk = script.indexOf('$availableDiskBytes = Get-AvailableDiskBytes')
+  const createRoot = script.indexOf('New-Item -ItemType Directory -Path $workRootFull')
+  const download = script.indexOf('Invoke-PinnedDownload -Url $backendUrl')
+  assert.ok(profile >= 0 && selection > profile)
+  assert.ok(workRoot > selection && actualMemory > workRoot)
+  assert.ok(freeDisk > actualMemory && createRoot > freeDisk && download > createRoot)
+  assert.match(script, /selected pinned model does not fit actual Windows RAM/)
+  assert.match(script, /\$model\.Size \* 10 -gt \$actualMemoryBytes \* 7/)
+  assert.doesNotMatch(script, /\$actualMemoryBytes -lt \$profileMemoryBytes/)
+  assert.match(script, /does not have enough free disk before model download/)
+  assert.match(script, /\$requiredDiskBytes = \[int64\]\$model\.Size \+/)
+  assert.match(script, /\$profileMemoryBytes = \[int64\]\$profileMemoryMb \* 1MB/)
+  for (const field of [
+    'model_revision=',
+    'model_size_bytes=',
+    'model_sha256=',
+    'runtime_version=',
+    'runtime_variant=',
+    'runtime_size_bytes=',
+    'runtime_sha256=',
+  ]) {
+    assert.ok(script.includes(field), `acceptance evidence omits ${field}`)
+  }
+
+  assert.match(workflow, /hardware_profile:/)
+  assert.match(workflow, /High-end requires a future Windows runner with 32GB\+ RAM/)
+  assert.match(workflow, /default: ordinary-16gb/)
+  assert.match(workflow, /- ordinary-16gb/)
+  assert.match(workflow, /- high-end-32gb/)
+  assert.match(workflow, /-HardwareProfile \$profile/)
+  assert.doesNotMatch(workflow, /RunDownloadsAgentAcceptance[\s\S]*pull_request/)
 })
 
 test('Windows extension bundle is a fail-closed allowlist without TurboQuant', () => {
@@ -229,6 +294,8 @@ test('manual model ritual exercises the real Downloads Agent contract', () => {
   for (const value of [
     'downloads_agent_acceptance',
     'Qwen3.5-9B-Q4_K_M.gguf',
+    'Qwen3.8-27B-Q4_K_M.gguf',
+    'ATOMIC_AGENT_E2E_MODEL_ID',
     'downloads-organizer',
     'restrict_to_yorebot_catalog: true',
     'AgentSessionState::new("downloads-agent-acceptance")',

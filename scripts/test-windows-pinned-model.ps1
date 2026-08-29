@@ -4,6 +4,9 @@
 param(
     [string] $WorkRoot = '',
 
+    [ValidateSet('ordinary-16gb', 'high-end-32gb', 'unsupported-4gb', 'unknown')]
+    [string] $HardwareProfile = 'ordinary-16gb',
+
     [switch] $ValidateManifestOnly,
 
     [switch] $RunDownloadsAgentAcceptance
@@ -53,20 +56,93 @@ function Assert-PinnedFile {
     }
 }
 
+function Get-ActualPhysicalMemoryBytes {
+    $job = Start-Job -ScriptBlock {
+        [int64](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+    }
+    try {
+        $completed = Wait-Job -Job $job -Timeout 15
+        if ($null -eq $completed) { throw 'Windows physical-memory detection timed out' }
+        if ($job.State -ne 'Completed') { throw "Windows physical-memory detection failed: $($job.State)" }
+        $values = @(Receive-Job -Job $job -ErrorAction Stop)
+        $value = [int64]$values[-1]
+        if ($value -le 0) { throw 'Windows physical-memory detection returned no usable value' }
+        return $value
+    } finally {
+        if ($job.State -eq 'Running') { Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null }
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-AvailableDiskBytes {
+    param([string] $Path)
+    $driveRoot = [System.IO.Path]::GetPathRoot($Path)
+    if ([string]::IsNullOrWhiteSpace($driveRoot)) {
+        throw "Cannot resolve drive for acceptance root: $Path"
+    }
+    return [int64]([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
+}
+
+function Get-PinnedModel {
+    param([string] $Source, [string] $Id)
+    $escapedId = [regex]::Escape($Id)
+    $match = [regex]::Match(
+        $Source,
+        "(?s)pinnedModel\(\{\s*id:\s*'$escapedId',(?<body>.*?)\}\)"
+    )
+    if (-not $match.Success) { throw "Pinned model '$Id' is missing from source manifest" }
+    $block = $match.Groups['body'].Value
+    return [pscustomobject]@{
+        Id = $Id
+        Repository = Get-StringField $block 'repository'
+        Revision = Get-StringField $block 'revision'
+        Filename = Get-StringField $block 'filename'
+        Size = Get-IntegerField $block 'sizeBytes'
+        Sha256 = Get-StringField $block 'sha256'
+    }
+}
+
 $modelSource = Get-Content $modelManifestPath -Raw
-$modelMatch = [regex]::Match(
-    $modelSource,
-    "(?s)pinnedModel\(\{\s*id:\s*'Qwen3\.5-9B-Q4_K_M',(?<body>.*?)\}\)"
+$models = @(
+    Get-PinnedModel -Source $modelSource -Id 'Qwen3.5-9B-Q4_K_M'
+    Get-PinnedModel -Source $modelSource -Id 'Qwen3.8-27B-Q4_K_M'
 )
-if (-not $modelMatch.Success) { throw 'Pinned Qwen3.5-9B model is missing from source manifest' }
-$modelBlock = $modelMatch.Groups['body'].Value
-$model = [pscustomobject]@{
-    Id = 'Qwen3.5-9B-Q4_K_M'
-    Repository = Get-StringField $modelBlock 'repository'
-    Revision = Get-StringField $modelBlock 'revision'
-    Filename = Get-StringField $modelBlock 'filename'
-    Size = Get-IntegerField $modelBlock 'sizeBytes'
-    Sha256 = Get-StringField $modelBlock 'sha256'
+
+if ($models[0].Repository -ne 'unsloth/Qwen3.5-9B-GGUF' -or
+    $models[0].Filename -ne 'Qwen3.5-9B-Q4_K_M.gguf') {
+    throw 'The ordinary-laptop source pin changed; review this acceptance ritual explicitly'
+}
+if ($models[1].Repository -ne 'ggml-org/Qwen3.8-27B-GGUF' -or
+    $models[1].Filename -ne 'Qwen3.8-27B-Q4_K_M.gguf') {
+    throw 'The high-end source pin changed; review this acceptance ritual explicitly'
+}
+
+$profileMemoryMb = switch ($HardwareProfile) {
+    'ordinary-16gb' { 16 * 1024 }
+    'high-end-32gb' { 32 * 1024 }
+    'unsupported-4gb' { 4 * 1024 }
+    'unknown' { 0 }
+}
+if ($profileMemoryMb -le 0) {
+    throw "Hardware profile memory is unknown; refusing model selection for '$HardwareProfile'"
+}
+$profileMemoryBytes = [int64]$profileMemoryMb * 1MB
+$model = @(
+    $models |
+        Sort-Object -Property Size -Descending |
+        Where-Object { $_.Size * 10 -le $profileMemoryBytes * 7 } |
+        Select-Object -First 1
+)
+if ($model.Count -ne 1) {
+    throw "No pinned model fits hardware profile '$HardwareProfile'; refusing download"
+}
+$model = $model[0]
+$expectedModelId = switch ($HardwareProfile) {
+    'ordinary-16gb' { 'Qwen3.5-9B-Q4_K_M' }
+    'high-end-32gb' { 'Qwen3.8-27B-Q4_K_M' }
+}
+if ($model.Id -ne $expectedModelId) {
+    throw "Automatic selection changed for '$HardwareProfile'; expected '$expectedModelId', got '$($model.Id)'"
 }
 $modelUrl = "https://huggingface.co/$($model.Repository)/resolve/$($model.Revision)/$($model.Filename)"
 
@@ -86,15 +162,12 @@ $backend = [pscustomobject]@{
 }
 $backendUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$($backend.Version)/$($backend.Filename)"
 
-if ($model.Repository -ne 'unsloth/Qwen3.5-9B-GGUF' -or
-    $model.Filename -ne 'Qwen3.5-9B-Q4_K_M.gguf') {
-    throw 'The ordinary-laptop source pin changed; review this acceptance ritual explicitly'
-}
 if ($backend.Filename -ne 'llama-b10431-bin-win-cpu-x64.zip') {
     throw 'The Windows CPU source pin changed; review this acceptance ritual explicitly'
 }
+Write-Host "Pinned acceptance manifest: profile=$HardwareProfile profile_memory_mb=$profileMemoryMb model_id=$($model.Id) model_revision=$($model.Revision) model_filename=$($model.Filename) model_size_bytes=$($model.Size) model_sha256=$($model.Sha256) runtime_version=$($backend.Version) runtime_variant=$($backend.Variant) runtime_filename=$($backend.Filename) runtime_size_bytes=$($backend.Size) runtime_sha256=$($backend.Sha256) result=pass"
 if ($ValidateManifestOnly) {
-    Write-Host 'Pinned model and runtime manifests parsed successfully.'
+    Write-Host "Pinned manifests and automatic selection passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
     return
 }
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
@@ -105,6 +178,17 @@ $workRootFull = [System.IO.Path]::GetFullPath($WorkRoot)
 if (Test-Path -LiteralPath $workRootFull) {
     throw "Acceptance root must be fresh: $workRootFull"
 }
+$actualMemoryBytes = Get-ActualPhysicalMemoryBytes
+if ($model.Size * 10 -gt $actualMemoryBytes * 7) {
+    throw "The selected pinned model does not fit actual Windows RAM before model download: profile=$HardwareProfile model_bytes=$($model.Size) actual_memory_bytes=$actualMemoryBytes"
+}
+$workspaceHeadroomBytes = [int64](512MB)
+$requiredDiskBytes = [int64]$model.Size + ([int64]$backend.Size * 2) + $workspaceHeadroomBytes
+$availableDiskBytes = Get-AvailableDiskBytes -Path $workRootFull
+if ($availableDiskBytes -lt $requiredDiskBytes) {
+    throw "Windows acceptance does not have enough free disk before model download: profile=$HardwareProfile required_bytes=$requiredDiskBytes available_bytes=$availableDiskBytes"
+}
+Write-Host "Pinned acceptance environment passed: profile=$HardwareProfile profile_memory_bytes=$profileMemoryBytes actual_memory_bytes=$actualMemoryBytes available_disk_bytes=$availableDiskBytes required_disk_bytes=$requiredDiskBytes result=pass"
 New-Item -ItemType Directory -Path $workRootFull | Out-Null
 $createdWorkRoot = $true
 
@@ -144,6 +228,7 @@ try {
     if ($RunDownloadsAgentAcceptance) {
         $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
         $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
+        $env:ATOMIC_AGENT_E2E_MODEL_ID = $model.Id
         $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
         Push-Location $projectRoot
         try {
@@ -159,7 +244,7 @@ try {
         } finally {
             Pop-Location
         }
-        Write-Host 'Pinned Downloads Agent acceptance passed.'
+        Write-Host "Pinned Downloads Agent acceptance passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
         return
     }
 
@@ -225,7 +310,7 @@ try {
 
     Stop-Process -Id $serverProcess.Id -Force -ErrorAction Stop
     if (-not $serverProcess.WaitForExit(30000)) { throw 'llama-server did not stop' }
-    Write-Host 'Pinned Qwen3.5-9B response smoke passed on loopback.'
+    Write-Host "Pinned model response smoke passed on loopback: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
 } catch {
     if (Test-Path -LiteralPath $stderrPath) {
         Write-Host 'llama-server stderr tail:'
