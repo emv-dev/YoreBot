@@ -254,6 +254,7 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
   assert.match(signed, /^\s+environment: windows-production-signing\s*$/m)
   assert.match(signed, /confirmation:/)
   assert.match(signed, /SIGN_YOREBOT_WINDOWS_CANDIDATE/)
+  assert.match(signed, /\$env:GITHUB_REF -cne 'refs\/heads\/yorebot-v2-base'/)
 
   for (const variable of [
     'AZURE_CLIENT_ID',
@@ -267,6 +268,13 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
     assert.match(signed, new RegExp(`vars\\.${variable}`), `missing variable: ${variable}`)
   }
   assert.doesNotMatch(signed, /secrets\.|AZURE_CLIENT_SECRET|\bcreds:/)
+
+  const actionRefs = [...signed.matchAll(/^\s*- uses: [^@\s]+@([^\s#]+).*$/gm)]
+    .map((match) => match[1])
+  assert.ok(actionRefs.length > 0)
+  for (const actionRef of actionRefs) {
+    assert.match(actionRef, /^[0-9a-f]{40}$/, `mutable action ref: ${actionRef}`)
+  }
 
   assert.match(
     signed,
@@ -362,7 +370,9 @@ test('Windows signing setup documents the human-only Azure boundary', () => {
 
   for (const value of [
     'windows-production-signing',
-    'repo:emv-dev/YoreBot:environment:windows-production-signing',
+    'repo:emv-dev@4650476/YoreBot@1350153489:environment:windows-production-signing',
+    'gh api repos/emv-dev/YoreBot',
+    'restrict deployment branches to `yorebot-v2-base` only',
     'Artifact Signing Certificate Profile Signer',
     'AZURE_CLIENT_ID',
     'AZURE_TENANT_ID',

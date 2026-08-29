@@ -16,11 +16,19 @@ Releases or enable the updater.
 
    - issuer: `https://token.actions.githubusercontent.com`
    - audience: `api://AzureADTokenExchange`
-   - subject: `repo:emv-dev/YoreBot:environment:windows-production-signing`
+   - subject: `repo:emv-dev@4650476/YoreBot@1350153489:environment:windows-production-signing`
+
+   Re-read the immutable owner and repository IDs before creating the
+   credential:
+
+   ```bash
+   gh api repos/emv-dev/YoreBot --jq '"repo:\(.owner.login)@\(.owner.id)/\(.name)@\(.id):environment:windows-production-signing"'
+   ```
 
 4. Create the GitHub environment `windows-production-signing`. Require a human
-   reviewer and restrict deployment branches as appropriate. Add these Actions
-   variables to that environment:
+   reviewer and **restrict deployment branches to `yorebot-v2-base` only**.
+   The workflow also rejects every other `github.ref` before checkout. Add
+   these Actions variables to that environment:
 
    - `AZURE_CLIENT_ID`
    - `AZURE_TENANT_ID`
