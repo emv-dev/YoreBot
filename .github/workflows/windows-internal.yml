@@ -224,6 +224,7 @@ jobs:
           Pop-Location
           yarn build:web
           cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::setup::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::access::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::grammar::tests:: -- --test-threads=1

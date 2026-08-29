@@ -65,6 +65,8 @@ test('Windows extension bundle is a fail-closed allowlist without TurboQuant', (
   const verifier = read('scripts/verify-windows-extension-bundle.mjs')
   const internal = read('.github/workflows/windows-internal.yml')
   const signed = read('.github/workflows/windows-signed-candidate.yml')
+  const setup = read('src-tauri/src/core/setup.rs')
+  const extensionCommands = read('src-tauri/src/core/extensions/commands.rs')
 
   const build = packageJson.scripts['build:extensions:win32']
   for (const workspace of [
@@ -81,10 +83,23 @@ test('Windows extension bundle is a fail-closed allowlist without TurboQuant', (
 
   assert.doesNotMatch(build, /--exclude/)
   assert.doesNotMatch(build, /@janhq\/llamacpp-extension/)
-  assert.match(build, /rimraf .*pre-install\/\*\.tgz/)
+  assert.match(build, /rimraf --glob ['"]\.\/pre-install\/\*\.tgz['"] &&/)
+  assert.doesNotMatch(build, /\|\| true/)
   assert.match(internal, /yarn verify:extensions:win32/)
   assert.match(signed, /yarn verify:extensions:win32/)
   assert.match(verifier, /Unexpected Windows extension bundle inventory/)
+
+  const installer = setup.slice(setup.indexOf('pub fn install_extensions'))
+  assert.ok(
+    installer.indexOf('prepare_yorebot_windows_extension_inventory') <
+      installer.indexOf('if !clean_up && extensions_path.exists()'),
+    'same-version allowlist migration must run before the early return'
+  )
+  assert.match(
+    extensionCommands,
+    /filter_yorebot_windows_extension_manifest\(&extensions_path, exts\)/
+  )
+  assert.match(internal, /core::setup::tests::/)
 })
 
 test('Windows runs the generated-content and startup zero-egress regressions', () => {

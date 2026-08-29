@@ -318,7 +318,9 @@ Append-only. Newest at top. Each entry follows this shape:
   rendering, and show HTML artifacts only as code after an explicit click.
   Disable upstream provider/model registry refreshes in the YoreBot consumer
   build and expose only `llamacpp-upstream` at runtime. Build Windows extension
-  archives from an exact allowlist and verify the generated inventory.
+  archives from an exact allowlist, verify the generated inventory, and filter
+  same-version installed manifests before extension startup. Remove only the
+  retired managed TurboQuant package; preserve unlisted files as inert data.
 - **Consequences:** Generated content cannot silently load remote images or
   execute HTML; blocked routes no longer cause registry egress; Windows cannot
   silently acquire the mutable TurboQuant extension. Users may still copy or
