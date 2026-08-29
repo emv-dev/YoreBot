@@ -41,10 +41,13 @@ pub const MAX_STEPS: u32 = 25;
 pub const MAX_PARALLEL_TOOL_CALLS: usize = 8;
 const AGENT_SLOT_ID: i32 = 0;
 const REPAIR_MAX_TOKENS: u32 = 1024;
-#[cfg(not(test))]
-const TOOL_STEP_COMPLETION_DEADLINE: Duration = Duration::from_secs(180);
+pub(super) const PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE: Duration = Duration::from_secs(180);
 #[cfg(test)]
-const TOOL_STEP_COMPLETION_DEADLINE: Duration = Duration::from_millis(100);
+pub(super) const TEST_TOOL_STEP_COMPLETION_DEADLINE: Duration = Duration::from_millis(100);
+#[cfg(not(test))]
+const DEFAULT_TOOL_STEP_COMPLETION_DEADLINE: Duration = PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE;
+#[cfg(test)]
+const DEFAULT_TOOL_STEP_COMPLETION_DEADLINE: Duration = TEST_TOOL_STEP_COMPLETION_DEADLINE;
 
 pub struct RunTurnInput<'a> {
     pub run_id: &'a str,
@@ -74,6 +77,23 @@ pub struct RunTurnInput<'a> {
 
 pub async fn run_turn(
     input: RunTurnInput<'_>,
+    emit: impl FnMut(AgentEvent) -> Result<(), String>,
+) -> Result<(), String> {
+    run_turn_with_deadline_inner(input, DEFAULT_TOOL_STEP_COMPLETION_DEADLINE, emit).await
+}
+
+#[cfg(test)]
+pub(super) async fn run_turn_with_completion_deadline(
+    input: RunTurnInput<'_>,
+    completion_deadline: Duration,
+    emit: impl FnMut(AgentEvent) -> Result<(), String>,
+) -> Result<(), String> {
+    run_turn_with_deadline_inner(input, completion_deadline, emit).await
+}
+
+async fn run_turn_with_deadline_inner(
+    input: RunTurnInput<'_>,
+    completion_deadline: Duration,
     mut emit: impl FnMut(AgentEvent) -> Result<(), String>,
 ) -> Result<(), String> {
     emit(AgentEvent::TurnStarted {
@@ -198,7 +218,13 @@ pub async fn run_turn(
         );
         notice = None;
         let request = CompletionRequest::tool_call(prompt, tool_grammar.clone(), AGENT_SLOT_ID);
-        let completion = complete_with_deadline(input.client, &request, input.cancellation).await;
+        let completion = complete_with_deadline(
+            input.client,
+            &request,
+            input.cancellation,
+            completion_deadline,
+        )
+        .await;
         let mut previous_output = String::new();
         let mut parsed = match completion {
             Ok(completion) => {
@@ -226,6 +252,7 @@ pub async fn run_turn(
                             input.cancellation,
                             input.model_profile,
                             input.restrict_to_yorebot_catalog,
+                            completion_deadline,
                         )
                         .await
                         {
@@ -275,6 +302,7 @@ pub async fn run_turn(
                     input.cancellation,
                     input.model_profile,
                     input.restrict_to_yorebot_catalog,
+                    completion_deadline,
                 )
                 .await
                 {
@@ -351,6 +379,7 @@ pub async fn run_turn(
                     input.cancellation,
                     input.model_profile,
                     input.restrict_to_yorebot_catalog,
+                    completion_deadline,
                 )
                 .await
                 {
@@ -765,6 +794,7 @@ async fn repair_tool_calls(
     cancellation: &CancellationToken,
     profile: AgentModelProfile,
     restrict_to_yorebot_catalog: bool,
+    completion_deadline: Duration,
 ) -> Result<(ParsedToolCalls, CompletionTiming), LlamaClientError> {
     let invalid_output = invalid_output.chars().take(4_000).collect::<String>();
     let repair_instruction = format!(
@@ -795,7 +825,8 @@ async fn repair_tool_calls(
     let mut request = original_request.clone();
     request.prompt = repair_prompt;
     request.max_tokens = REPAIR_MAX_TOKENS;
-    let completion = complete_with_deadline(client, &request, cancellation).await?;
+    let completion =
+        complete_with_deadline(client, &request, cancellation, completion_deadline).await?;
     let parsed = parse_and_validate(&completion.content, profile, restrict_to_yorebot_catalog)
         .map_err(|error| LlamaClientError::InvalidResponse(format!("Repair failed: {error}")))?;
     Ok((parsed, completion.timing))
@@ -805,12 +836,13 @@ async fn complete_with_deadline(
     client: &LlamaServerClient,
     request: &CompletionRequest,
     cancellation: &CancellationToken,
+    completion_deadline: Duration,
 ) -> Result<super::llm_client::CompletionResult, LlamaClientError> {
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(LlamaClientError::Cancelled),
         result = tokio::time::timeout(
-            TOOL_STEP_COMPLETION_DEADLINE,
+            completion_deadline,
             client.complete(request, cancellation),
         ) => match result {
             Ok(result) => result,

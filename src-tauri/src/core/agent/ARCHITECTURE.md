@@ -41,7 +41,9 @@ MCP tools, window control, and filesystem watchers are deferred.
 - The variable tail contains loaded rare descriptors, the conversation, an
   optional loop notice, and the response marker.
 - Tool output is constrained by an array-only GBNF root. One tool call is a
-  one-element array; a step may contain up to eight calls at runtime.
+  one-element array; a step may contain up to eight calls at runtime. The
+  grammar permits at most one terminal call and only in final position; the
+  runtime validator repeats that check as defense in depth.
 - The prompt catalog and grammar tool-name set must remain identical.
 
 ### Loop and execution
@@ -63,7 +65,7 @@ valid only as the final call and executes after all preceding calls finish.
 
 ### Safety controls already present
 
-- Array-only GBNF tool grammar.
+- Array-only GBNF tool grammar with terminal position and cardinality bounds.
 - Runtime batch-size and step limits.
 - Resource-class validation.
 - Repeat, no-progress, and wandering loop detection.
@@ -130,46 +132,51 @@ network access:
   operations inside an isolated workspace. It also pins traversal, path
   escape, hard-block, denial, cancellation, and output-boundary behavior.
 
-`model_e2e.rs` is a local, ignored acceptance ritual. It starts and stops one
-externally supplied TurboQuant `llama-server`, loads one externally supplied
-GGUF once, and runs all model scenarios sequentially against slot `0`.
-Automatic artifact downloads and mandatory CI execution are intentionally out
-of scope.
+`model_e2e.rs` is an ignored, manual acceptance ritual. It starts and stops the
+externally supplied pinned upstream Windows CPU `llama-server`, loads the
+externally supplied pinned Qwen3.5-9B GGUF once, and runs the Downloads Agent
+scenarios sequentially against slot `0`. Routine pull requests compile the
+test but do not download the model. The manual Windows workflow obtains and
+verifies both artifacts from the product manifests before running it.
 
 ### Managed model E2E contract
 
 The ignored test requires:
 
-- `ATOMIC_AGENT_E2E_LLAMA_SERVER`: local executable from
-  `AtomicBot-ai/atomic-llama-cpp-turboquant`, not vanilla upstream llama.cpp.
-- `ATOMIC_AGENT_E2E_MODEL`: the already-downloaded IQ4_XS GGUF for
-  `unsloth/Qwen3_5-9B-GGUF-Qwen3_5-9B-IQ4_XS`. A different model is not an
-  equivalent acceptance run.
-- `ATOMIC_AGENT_E2E_N_GPU_LAYERS`: optional `-ngl` value; defaults to `-1`.
+- `ATOMIC_AGENT_E2E_LLAMA_SERVER`: exact upstream `ggml-org/llama.cpp`
+  Windows CPU build `b10431` executable.
+- `ATOMIC_AGENT_E2E_MODEL`: exact `Qwen3.5-9B-Q4_K_M.gguf` from the pinned
+  `unsloth/Qwen3.5-9B-GGUF` revision in the product manifest.
 - `ATOMIC_AGENT_E2E_TIMEOUT_SECS`: optional startup and per-scenario timeout;
   defaults to 900 seconds.
 
 The harness chooses a free loopback port and launches the server with one
-parallel slot, an 8192-token context, Jinja templates, no Web UI, flash
-attention, and TurboQuant `turbo3` K/V cache. It prints `llama-server
---version`, the nearest `version.txt`, and the exact paths before waiting for
-`/health`.
+parallel slot, an 8192-token context, Jinja templates, no Web UI, and CPU-only
+inference while letting llama.cpp choose the CPU thread count. It verifies
+build `10431`, uses the server directory as its working directory, prints
+bounded provenance, waits for loopback `/health`, and selects the model profile
+from `/props` like the product path. The ignored ritual explicitly uses the
+production 180-second completion-attempt deadline; deterministic runner tests
+retain their 100-millisecond deadline.
 
 Run it from the repository root:
 
 ```bash
-ATOMIC_AGENT_E2E_LLAMA_SERVER=<turboquant-llama-server> \
-ATOMIC_AGENT_E2E_MODEL=<unsloth-Qwen3_5-9B-IQ4_XS.gguf> \
-cargo test --manifest-path src-tauri/Cargo.toml -p Atomic-Chat \
-  managed_model_agent_scenarios -- --ignored --nocapture --test-threads=1
+ATOMIC_AGENT_E2E_LLAMA_SERVER=<b10431-llama-server> \
+ATOMIC_AGENT_E2E_MODEL=<Qwen3.5-9B-Q4_K_M.gguf> \
+cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri \
+  downloads_agent_acceptance -- --ignored --nocapture --test-threads=1
 ```
 
-The model must reliably follow array-only GBNF tool calls and the
-`tool.view`-before-rare-tool contract. Assertions target parsed tools, events,
-side effects, and terminal reasons rather than free-form reply text. On
-startup failure, timeout, or agent invariant failure, the harness includes
-bounded stdout/stderr tails in the panic and its RAII guard terminates the
-child process.
+The test copies the actual bundled `downloads-organizer` skill into an isolated
+registry and exposes only the YoreBot catalog. One persisted session must plan
+without mutation, apply exactly approved non-overwriting moves, summarize disk
+state, and undo one move. A separate denied session must leave its fixture
+unchanged. Tool paths use `.` for the primary Downloads root and relative child
+paths so the model never has to reconstruct a platform-specific absolute path.
+Assertions cover calls, exact approval paths, replies, full fixture
+snapshots, and terminal reasons. Failures print bounded events and server logs;
+the RAII guard terminates only its owned child process.
 
 ## Iteration 1b contract corrections
 

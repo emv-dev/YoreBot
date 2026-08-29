@@ -4,11 +4,14 @@
 param(
     [string] $WorkRoot = '',
 
-    [switch] $ValidateManifestOnly
+    [switch] $ValidateManifestOnly,
+
+    [switch] $RunDownloadsAgentAcceptance
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 $projectRoot = Split-Path $PSScriptRoot
 $modelManifestPath = Join-Path $projectRoot 'web-app/src/constants/yorebot-models.ts'
@@ -136,6 +139,28 @@ try {
         $rule.Direction.ToString() -ne 'Outbound' -or
         $rule.Action.ToString() -ne 'Block') {
         throw 'Outbound firewall rule is not active for llama-server'
+    }
+
+    if ($RunDownloadsAgentAcceptance) {
+        $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
+        $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
+        $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
+        Push-Location $projectRoot
+        try {
+            & cargo test `
+                --manifest-path src-tauri/Cargo.toml `
+                --lib `
+                --features test-tauri `
+                core::agent::model_e2e::downloads_agent_acceptance `
+                -- `
+                --ignored `
+                --nocapture `
+                --test-threads=1
+        } finally {
+            Pop-Location
+        }
+        Write-Host 'Pinned Downloads Agent acceptance passed.'
+        return
     }
 
     $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)

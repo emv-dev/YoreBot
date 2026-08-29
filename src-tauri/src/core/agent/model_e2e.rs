@@ -1,4 +1,5 @@
-use std::fs::File;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -6,19 +7,28 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use super::llm_client::{LlamaServerClient, LlamaSessionTarget};
+use super::llm_client::{LlamaBackend, LlamaServerClient, LlamaSessionTarget};
+use super::model_profile::{detect_model_profile, AgentModelProfile};
 use super::path_policy::EditableRoots;
 use super::prompt::{
-    build_stable_prefix, CapabilitiesSummary, DEFAULT_MAX_PARALLEL_TOOL_CALLS, ITERATION_ONE_TOOLS,
+    build_stable_prefix_for_profile, CapabilitiesSummary, SkillDescriptor,
+    DEFAULT_MAX_PARALLEL_TOOL_CALLS, ITERATION_ONE_TOOLS,
 };
-use super::runner::{run_turn, RunTurnInput};
+use super::runner::{
+    run_turn_with_completion_deadline, RunTurnInput, PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE,
+};
 use super::session::AgentSessionState;
+use super::skills::{available_tool_names, SkillRegistry};
 use super::test_support::{
     collect_event, RecordingApproval, RecordingDesktop, RecordingFolderAccess, TestWorkspace,
 };
-use super::types::{AgentEvent, ToolStatus};
+use super::types::{AgentEvent, ApprovalRequest, ToolCallPayload, ToolStatus};
 
-const REQUIRED_MODEL_ID: &str = "unsloth/Qwen3_5-9B-GGUF-Qwen3_5-9B-IQ4_XS";
+const REQUIRED_MODEL_ID: &str = "Qwen3.5-9B-Q4_K_M";
+const REQUIRED_MODEL_FILENAME: &str = "Qwen3.5-9B-Q4_K_M.gguf";
+const REQUIRED_BACKEND_BUILD: &str = "10431";
+const DOWNLOADS_SKILL: &str = "downloads-organizer";
+const DOWNLOADS_AGENT_COMPLETION_DEADLINE: Duration = PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE;
 
 struct ManagedLlamaServer {
     child: Child,
@@ -39,6 +49,12 @@ impl ManagedLlamaServer {
 
 impl Drop for ManagedLlamaServer {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "Downloads Agent failure diagnostics:\n{}",
+                self.diagnostics()
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -47,8 +63,12 @@ impl Drop for ManagedLlamaServer {
 struct LiveHarness {
     process: ManagedLlamaServer,
     workspace: TestWorkspace,
+    downloads: PathBuf,
     client: LlamaServerClient,
+    model_profile: AgentModelProfile,
+    skill_registry: SkillRegistry,
     stable_prefix: String,
+    session: AgentSessionState,
     timeout: Duration,
 }
 
@@ -57,19 +77,29 @@ impl LiveHarness {
         let server_path = required_env_path("ATOMIC_AGENT_E2E_LLAMA_SERVER");
         let model_path = required_env_path("ATOMIC_AGENT_E2E_MODEL");
         assert_target_model(&model_path);
+        assert_server_version(&server_path);
 
         let workspace = TestWorkspace::new();
+        seed_bundled_downloads_skill(workspace.path());
+        let skill_registry = SkillRegistry::load(
+            workspace.path().join(".agent-skills"),
+            &BTreeSet::from([DOWNLOADS_SKILL.to_owned()]),
+            &available_tool_names(),
+        )
+        .expect("load bundled Downloads organizer");
+        assert!(skill_registry.get_enabled(DOWNLOADS_SKILL).is_some());
+        let downloads = workspace.path().join("Downloads");
+        fs::create_dir(&downloads).expect("create isolated Downloads fixture");
+
         let port = reserve_loopback_port();
         let timeout = Duration::from_secs(env_u64("ATOMIC_AGENT_E2E_TIMEOUT_SECS", 900));
         let stdout_log = workspace.path().join("llama-server.stdout.log");
         let stderr_log = workspace.path().join("llama-server.stderr.log");
         print_provenance(&server_path, &model_path);
-
         let stdout = File::create(&stdout_log).expect("create llama-server stdout log");
         let stderr = File::create(&stderr_log).expect("create llama-server stderr log");
-        let n_gpu_layers =
-            std::env::var("ATOMIC_AGENT_E2E_N_GPU_LAYERS").unwrap_or_else(|_| "-1".into());
         let child = Command::new(&server_path)
+            .current_dir(server_path.parent().expect("llama-server parent"))
             .args([
                 "--model",
                 model_path.to_str().expect("UTF-8 model path"),
@@ -83,14 +113,8 @@ impl LiveHarness {
                 "8192",
                 "--no-webui",
                 "--jinja",
-                "-ctk",
-                "turbo3",
-                "-ctv",
-                "turbo3",
-                "-fa",
-                "on",
                 "-ngl",
-                &n_gpu_layers,
+                "0",
             ])
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -110,218 +134,701 @@ impl LiveHarness {
             api_key: String::new(),
             model_id: REQUIRED_MODEL_ID.into(),
             has_vision: false,
-            backend: super::llm_client::LlamaBackend::Llamacpp,
+            backend: LlamaBackend::LlamacppUpstream,
         })
-        .expect("create live llama-server client");
-        let stable_prefix = build_stable_prefix(
-            ITERATION_ONE_TOOLS,
-            &[],
-            &CapabilitiesSummary {
-                platform: std::env::consts::OS.into(),
-                arch: std::env::consts::ARCH.into(),
-                browser_channel: "none".into(),
-                working_dir: workspace.path().display().to_string(),
-                has_clipboard: false,
-                has_wmctrl: false,
-                has_notifications: false,
-            },
-            DEFAULT_MAX_PARALLEL_TOOL_CALLS,
-            None,
-        );
+        .expect("create upstream llama-server client");
+        let profile_cancellation = CancellationToken::new();
+        let model_profile = match client.fetch_props(&profile_cancellation).await {
+            Ok(props) => detect_model_profile(&props),
+            Err(error) => {
+                eprintln!("Agent model-profile probe failed; using plain profile: {error}");
+                AgentModelProfile::Plain
+            }
+        };
+        let stable_prefix = downloads_stable_prefix(&skill_registry, &downloads, model_profile);
         Self {
             process,
             workspace,
+            downloads,
             client,
+            model_profile,
+            skill_registry,
             stable_prefix,
+            session: AgentSessionState::new("downloads-agent-acceptance"),
             timeout,
         }
     }
 
-    async fn run(
+    async fn run_main(
         &mut self,
         run_id: &str,
         user_message: &str,
+        selected_skill: Option<&str>,
         approval: &RecordingApproval,
         max_steps: u32,
     ) -> Vec<AgentEvent> {
-        let desktop = RecordingDesktop::default();
-        let cancellation = CancellationToken::new();
-        let mut session = AgentSessionState::new(run_id);
-        let skill_registry = self.workspace.skill_registry();
-        let editable_roots = EditableRoots::new(self.workspace.path(), &[])
-            .await
-            .unwrap();
-        let folder_access = RecordingFolderAccess::deny();
-        let mut events = Vec::new();
-        let result = tokio::time::timeout(
+        run_scenario(
+            &mut self.process,
+            &self.client,
+            &self.skill_registry,
+            &self.downloads,
+            &self.stable_prefix,
+            self.model_profile,
+            &mut self.session,
+            run_id,
+            user_message,
+            selected_skill,
+            approval,
+            max_steps,
             self.timeout,
-            run_turn(
-                RunTurnInput {
-                    run_id,
-                    session_id: run_id,
-                    user_message,
-                    selected_skill: None,
-                    stable_prefix: &self.stable_prefix,
-                    model_profile: super::model_profile::AgentModelProfile::Plain,
-                    working_dir: self.workspace.path(),
-                    editable_roots: &editable_roots,
-                    external_read_only_roots: &[],
-                    trusted_read_roots: &[],
-                    max_steps,
-                    client: &self.client,
-                    approval,
-                    folder_access: &folder_access,
-                    desktop: &desktop,
-                    cancellation: &cancellation,
-                    session: &mut session,
-                    skill_registry: &skill_registry,
-                    bundled_script_runtime: None,
-                    quota: None,
-                    restrict_to_yorebot_catalog: false,
-                },
-                |event| collect_event(&mut events, event),
-            ),
+        )
+        .await
+    }
+}
+
+#[test]
+fn live_acceptance_uses_production_deadline_without_slowing_unit_tests() {
+    assert_eq!(
+        super::runner::TEST_TOOL_STEP_COMPLETION_DEADLINE,
+        Duration::from_millis(100)
+    );
+    assert_eq!(
+        DOWNLOADS_AGENT_COMPLETION_DEADLINE,
+        Duration::from_secs(180)
+    );
+}
+
+#[test]
+fn undo_summary_accepts_current_paths_and_restoration_semantics() {
+    let events = [AgentEvent::AssistantReply {
+        text: "Moved quarterly-report.pdf back to root, mystery.download untouched".into(),
+    }];
+
+    assert_reply_mentions(&events, &["quarterly-report.pdf", "mystery.download"]);
+    assert_reply_mentions_any(&events, &["back", "restored", "root"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned upstream b10431 and Qwen3.5-9B Q4_K_M"]
+async fn downloads_agent_acceptance() {
+    let mut harness = LiveHarness::start().await;
+    harness
+        .workspace
+        .write("Downloads/quarterly-report.pdf", "REPORT_SENTINEL_481");
+    harness
+        .workspace
+        .write("Downloads/mystery.download", "UNCERTAIN_SENTINEL_927");
+    let initial = BTreeMap::from([
+        file("mystery.download", b"UNCERTAIN_SENTINEL_927"),
+        file("quarterly-report.pdf", b"REPORT_SENTINEL_481"),
+    ]);
+    assert_snapshot(&harness.downloads, &initial);
+
+    let plan_approval = RecordingApproval::deny();
+    let plan = harness
+        .run_main(
+            "downloads-plan",
+            "Call `os.fs.list` exactly once with `{\"path\":\".\"}` to inventory the connected Downloads folder. After observing that result, propose exactly one change: create `Documents` and move `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Leave `mystery.download` untouched because its type is uncertain. Do not mutate anything this turn. Use only relative paths, reply with the exact source and destination paths, and wait for acceptance.",
+            Some(DOWNLOADS_SKILL),
+            &plan_approval,
+            5,
         )
         .await;
-        match result {
-            Ok(Ok(())) => events,
-            Ok(Err(error)) => panic!(
-                "agent scenario {run_id} failed: {error}\nevents: {events:#?}\n{}",
-                self.process.diagnostics()
+    assert_finished(&plan, "reply");
+    assert_catalog_is_restricted(&plan);
+    assert_no_mutating_tools(&plan);
+    assert_eq!(count_tool(&plan, "os.fs.list"), 1, "events: {plan:#?}");
+    assert_singleton_tool(&plan, "os.fs.list");
+    assert_tool_string_arg(&plan, "os.fs.list", "path", ".");
+    assert_tool_summary_mentions(
+        &plan,
+        "os.fs.list",
+        &["quarterly-report.pdf", "mystery.download"],
+    );
+    assert!(plan_approval.requests().is_empty(), "events: {plan:#?}");
+    assert_snapshot(&harness.downloads, &initial);
+    // The proposal must name every planned mutation. The inventory outcome and
+    // unchanged snapshot, above, separately prove the uncertain file stayed put.
+    assert_reply_mentions(
+        &plan,
+        &["quarterly-report.pdf", "Documents/quarterly-report.pdf"],
+    );
+
+    let mutation_approval = RecordingApproval::allow();
+    let apply = harness
+        .run_main(
+            "downloads-apply",
+            "I explicitly accept that exact proposal. Use only these relative paths: `quarterly-report.pdf`, `Documents`, and `Documents/quarterly-report.pdf`. Do not announce intentions or call `reply` before executing. Start by calling `os.fs.mkdir` exactly once for `Documents`; after it succeeds, call `os.fs.move` exactly once from `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not move `mystery.download`. After both accepted actions succeed, list `.` and `Documents`, then call `reply` with the exact moved and untouched paths.",
+            None,
+            &mutation_approval,
+            8,
+        )
+        .await;
+    assert_finished(&apply, "reply");
+    assert_catalog_is_restricted(&apply);
+    assert_eq!(count_tool(&apply, "os.fs.mkdir"), 1, "events: {apply:#?}");
+    assert_eq!(count_tool(&apply, "os.fs.move"), 1, "events: {apply:#?}");
+    assert_tool_string_arg(&apply, "os.fs.mkdir", "path", "Documents");
+    assert_tool_string_arg(&apply, "os.fs.move", "source", "quarterly-report.pdf");
+    assert_tool_string_arg(
+        &apply,
+        "os.fs.move",
+        "destination",
+        "Documents/quarterly-report.pdf",
+    );
+    assert_tool_status(&apply, "os.fs.mkdir", ToolStatus::Ok);
+    assert_tool_status(&apply, "os.fs.move", ToolStatus::Ok);
+    let canonical_downloads = fs::canonicalize(&harness.downloads).expect("canonical Downloads");
+    let documents = canonical_downloads.join("Documents");
+    assert_allow_once_requests(
+        &mutation_approval.requests(),
+        &[
+            ExpectedApproval::mkdir(documents.clone()),
+            ExpectedApproval::move_path(
+                canonical_downloads.join("quarterly-report.pdf"),
+                documents.join("quarterly-report.pdf"),
             ),
-            Err(_) => panic!(
-                "agent scenario {run_id} exceeded {:?}\n{}",
-                self.timeout,
-                self.process.diagnostics()
-            ),
+        ],
+    );
+    let applied = BTreeMap::from([
+        directory("Documents"),
+        file("Documents/quarterly-report.pdf", b"REPORT_SENTINEL_481"),
+        file("mystery.download", b"UNCERTAIN_SENTINEL_927"),
+    ]);
+    assert_snapshot(&harness.downloads, &applied);
+    assert_reply_mentions(
+        &apply,
+        &[
+            "quarterly-report.pdf",
+            "Documents/quarterly-report.pdf",
+            "mystery.download",
+        ],
+    );
+
+    let undo_approval = RecordingApproval::allow();
+    let undo = harness
+        .run_main(
+            "downloads-undo",
+            "Undo the one successful move from this same session using only relative paths: move `Documents/quarterly-report.pdf` back to `quarterly-report.pdf`. Do not remove `Documents` or touch `mystery.download`. After the approved reverse move succeeds, list `.` and `Documents`, then reply with the exact reverse-move source `Documents/quarterly-report.pdf`, restored destination `quarterly-report.pdf`, and untouched path `mystery.download`.",
+            None,
+            &undo_approval,
+            6,
+        )
+        .await;
+    assert_finished(&undo, "reply");
+    assert_catalog_is_restricted(&undo);
+    assert_eq!(count_tool(&undo, "os.fs.move"), 1, "events: {undo:#?}");
+    assert_eq!(count_tool(&undo, "os.fs.mkdir"), 0, "events: {undo:#?}");
+    assert_tool_string_arg(
+        &undo,
+        "os.fs.move",
+        "source",
+        "Documents/quarterly-report.pdf",
+    );
+    assert_tool_string_arg(&undo, "os.fs.move", "destination", "quarterly-report.pdf");
+    assert_tool_status(&undo, "os.fs.move", ToolStatus::Ok);
+    assert_allow_once_requests(
+        &undo_approval.requests(),
+        &[ExpectedApproval::move_path(
+            documents.join("quarterly-report.pdf"),
+            canonical_downloads.join("quarterly-report.pdf"),
+        )],
+    );
+    let undone = BTreeMap::from([
+        directory("Documents"),
+        file("mystery.download", b"UNCERTAIN_SENTINEL_927"),
+        file("quarterly-report.pdf", b"REPORT_SENTINEL_481"),
+    ]);
+    assert_snapshot(&harness.downloads, &undone);
+    // Tool, approval, and snapshot assertions above prove the exact historical
+    // source. The user-facing summary must accurately describe current state.
+    assert_reply_mentions(&undo, &["quarterly-report.pdf", "mystery.download"]);
+    assert_reply_mentions_any(&undo, &["back", "restored", "root"]);
+
+    run_denied_scenario(&mut harness).await;
+}
+
+async fn run_denied_scenario(harness: &mut LiveHarness) {
+    let denied_downloads = harness.workspace.path().join("DeniedDownloads");
+    fs::create_dir(&denied_downloads).expect("create denied Downloads fixture");
+    harness
+        .workspace
+        .write("DeniedDownloads/denied-report.pdf", "DENIED_SENTINEL_314");
+    harness
+        .workspace
+        .write("DeniedDownloads/leave-alone.bin", "LEAVE_ALONE_159");
+    let initial = BTreeMap::from([
+        file("denied-report.pdf", b"DENIED_SENTINEL_314"),
+        file("leave-alone.bin", b"LEAVE_ALONE_159"),
+    ]);
+    let stable_prefix = downloads_stable_prefix(
+        &harness.skill_registry,
+        &denied_downloads,
+        harness.model_profile,
+    );
+    let mut session = AgentSessionState::new("downloads-agent-denied");
+    let approval = RecordingApproval::deny();
+    let events = run_scenario(
+        &mut harness.process,
+        &harness.client,
+        &harness.skill_registry,
+        &denied_downloads,
+        &stable_prefix,
+        harness.model_profile,
+        &mut session,
+        "downloads-denied",
+        "This exact plan was already reviewed and I explicitly accept it: move `denied-report.pdf` to `Documents/denied-report.pdf`. Do not announce intentions or call `reply` before executing. Your first call must be `os.fs.move` exactly once from `denied-report.pdf` to `Documents/denied-report.pdf`. The approval outcome is unknown. Only after observing the actual tool outcome may you call `reply`; never retry or create anything, and report that the move from `denied-report.pdf` to `Documents/denied-report.pdf` was denied.",
+        Some(DOWNLOADS_SKILL),
+        &approval,
+        4,
+        harness.timeout,
+    )
+    .await;
+    assert_finished(&events, "reply");
+    assert_catalog_is_restricted(&events);
+    assert_eq!(count_tool(&events, "os.fs.move"), 1, "events: {events:#?}");
+    assert_eq!(count_tool(&events, "os.fs.mkdir"), 0, "events: {events:#?}");
+    assert_tool_string_arg(&events, "os.fs.move", "source", "denied-report.pdf");
+    assert_tool_string_arg(
+        &events,
+        "os.fs.move",
+        "destination",
+        "Documents/denied-report.pdf",
+    );
+    assert_tool_status(&events, "os.fs.move", ToolStatus::Denied);
+    let requests = approval.requests();
+    assert_eq!(requests.len(), 1, "events: {events:#?}");
+    let canonical = fs::canonicalize(&denied_downloads).expect("canonical denied Downloads");
+    assert_request_paths(
+        &requests[0],
+        &ExpectedApproval::move_path(
+            canonical.join("denied-report.pdf"),
+            canonical.join("Documents/denied-report.pdf"),
+        ),
+    );
+    assert_snapshot(&denied_downloads, &initial);
+    // The exact snapshot proves leave-alone.bin stayed untouched; the summary
+    // only needs to identify the requested move and its observed outcome.
+    assert_reply_mentions(
+        &events,
+        &["denied-report.pdf", "Documents/denied-report.pdf"],
+    );
+    assert_reply_mentions_any(&events, &["denied", "declined", "not approved"]);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_scenario(
+    process: &mut ManagedLlamaServer,
+    client: &LlamaServerClient,
+    skill_registry: &SkillRegistry,
+    working_dir: &Path,
+    stable_prefix: &str,
+    model_profile: AgentModelProfile,
+    session: &mut AgentSessionState,
+    run_id: &str,
+    user_message: &str,
+    selected_skill: Option<&str>,
+    approval: &RecordingApproval,
+    max_steps: u32,
+    timeout: Duration,
+) -> Vec<AgentEvent> {
+    let desktop = RecordingDesktop::default();
+    let cancellation = CancellationToken::new();
+    let editable_roots = EditableRoots::new(working_dir, &[]).await.unwrap();
+    let folder_access = RecordingFolderAccess::deny();
+    let session_id = session.session_id.clone();
+    let mut events = Vec::new();
+    let result = tokio::time::timeout(
+        timeout,
+        run_turn_with_completion_deadline(
+            RunTurnInput {
+                run_id,
+                session_id: &session_id,
+                user_message,
+                selected_skill,
+                stable_prefix,
+                model_profile,
+                working_dir,
+                editable_roots: &editable_roots,
+                external_read_only_roots: &[],
+                trusted_read_roots: &[],
+                max_steps,
+                client,
+                approval,
+                folder_access: &folder_access,
+                desktop: &desktop,
+                cancellation: &cancellation,
+                session,
+                skill_registry,
+                bundled_script_runtime: None,
+                quota: None,
+                restrict_to_yorebot_catalog: true,
+            },
+            DOWNLOADS_AGENT_COMPLETION_DEADLINE,
+            |event| collect_event(&mut events, event),
+        ),
+    )
+    .await;
+    match result {
+        Ok(Ok(())) => events,
+        Ok(Err(error)) => panic!(
+            "agent scenario {run_id} failed: {error}\nevents: {events:#?}\n{}",
+            process.diagnostics()
+        ),
+        Err(_) => panic!(
+            "agent scenario {run_id} exceeded {timeout:?}\nevents: {events:#?}\n{}",
+            process.diagnostics()
+        ),
+    }
+}
+
+fn downloads_stable_prefix(
+    skill_registry: &SkillRegistry,
+    working_dir: &Path,
+    model_profile: AgentModelProfile,
+) -> String {
+    let record = skill_registry
+        .get_enabled(DOWNLOADS_SKILL)
+        .expect("enabled bundled Downloads organizer");
+    let skill = SkillDescriptor {
+        name: record.manifest.name.clone(),
+        description: record.manifest.description.clone(),
+        version: record.manifest.version.clone(),
+        requires_tools: record.manifest.requires_tools.clone(),
+        requires_scripts: record.manifest.requires_scripts.clone(),
+        dangerous: record.manifest.dangerous,
+    };
+    build_stable_prefix_for_profile(
+        ITERATION_ONE_TOOLS,
+        &[skill],
+        &CapabilitiesSummary {
+            platform: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            browser_channel: "none".into(),
+            working_dir: working_dir.display().to_string(),
+            has_clipboard: false,
+            has_wmctrl: false,
+            has_notifications: false,
+        },
+        DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+        None,
+        model_profile,
+    )
+}
+
+fn seed_bundled_downloads_skill(workspace: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/agent-skills")
+        .join(DOWNLOADS_SKILL)
+        .join("SKILL.md");
+    let destination = workspace
+        .join(".agent-skills")
+        .join(DOWNLOADS_SKILL)
+        .join("SKILL.md");
+    fs::create_dir_all(destination.parent().expect("skill destination parent"))
+        .expect("create fixture skill directory");
+    fs::copy(&source, &destination).unwrap_or_else(|error| {
+        panic!(
+            "copy bundled skill {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SnapshotEntry {
+    Directory,
+    File(Vec<u8>),
+}
+
+fn file(path: &str, content: &[u8]) -> (String, SnapshotEntry) {
+    (path.to_owned(), SnapshotEntry::File(content.to_vec()))
+}
+
+fn directory(path: &str) -> (String, SnapshotEntry) {
+    (path.to_owned(), SnapshotEntry::Directory)
+}
+
+fn assert_snapshot(root: &Path, expected: &BTreeMap<String, SnapshotEntry>) {
+    let actual = snapshot(root);
+    assert_eq!(
+        &actual,
+        expected,
+        "unexpected disk state under {}",
+        root.display()
+    );
+}
+
+fn snapshot(root: &Path) -> BTreeMap<String, SnapshotEntry> {
+    fn walk(root: &Path, directory: &Path, entries: &mut BTreeMap<String, SnapshotEntry>) {
+        let mut children = fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("read fixture {}: {error}", directory.display()))
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let path = child.path();
+            let relative = path
+                .strip_prefix(root)
+                .expect("fixture child under root")
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            let file_type = child.file_type().expect("fixture file type");
+            if file_type.is_dir() {
+                entries.insert(relative, SnapshotEntry::Directory);
+                walk(root, &path, entries);
+            } else if file_type.is_file() {
+                entries.insert(
+                    relative,
+                    SnapshotEntry::File(fs::read(&path).expect("read fixture file")),
+                );
+            } else {
+                panic!("unexpected fixture entry type: {}", path.display());
+            }
+        }
+    }
+
+    let mut entries = BTreeMap::new();
+    walk(root, root, &mut entries);
+    entries
+}
+
+struct ExpectedApproval {
+    tool: &'static str,
+    paths: Vec<(&'static str, PathBuf)>,
+}
+
+impl ExpectedApproval {
+    fn mkdir(path: PathBuf) -> Self {
+        Self {
+            tool: "os.fs.mkdir",
+            paths: vec![("path", path)],
+        }
+    }
+
+    fn move_path(source: PathBuf, destination: PathBuf) -> Self {
+        Self {
+            tool: "os.fs.move",
+            paths: vec![("source", source), ("destination", destination)],
         }
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires local TurboQuant llama-server and the exact Qwen3.5 9B IQ4_XS GGUF"]
-async fn managed_model_agent_scenarios() {
-    let mut harness = LiveHarness::start().await;
+fn assert_allow_once_requests(requests: &[ApprovalRequest], expected: &[ExpectedApproval]) {
+    assert_eq!(
+        requests.len(),
+        expected.len(),
+        "every mutation must receive exactly one AllowOnce request: {requests:#?}"
+    );
+    for (request, expected) in requests.iter().zip(expected) {
+        assert_request_paths(request, expected);
+        assert!(!request.can_remember, "approval must be one-action only");
+    }
+}
 
-    let terminal = harness
-        .run(
-            "model-terminal",
-            "Call reply now with text exactly MODEL_E2E_READY.",
-            &RecordingApproval::deny(),
-            2,
-        )
-        .await;
-    assert_finished(&terminal, "reply");
-    assert_eq!(parsed_tools(&terminal), ["reply"]);
+fn assert_request_paths(request: &ApprovalRequest, expected: &ExpectedApproval) {
+    assert_eq!(request.tool, expected.tool, "approval order changed");
+    for (field, path) in &expected.paths {
+        let actual = request
+            .preview
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("approval preview lacks exact {field}: {request:#?}"));
+        assert_eq!(
+            Path::new(actual),
+            path.as_path(),
+            "approval preview changed {field}"
+        );
+    }
+}
 
-    harness.workspace.write("first.txt", "SENTINEL_ALPHA_481");
-    harness.workspace.write("second.txt", "SENTINEL_BETA_927");
-    let reads = harness
-        .run(
-            "model-reads",
-            "On the first step, call exactly two tools in one array: os.fs.read with path first.txt, then os.fs.read with path second.txt. Do not call reply on that step. After observing both unique sentinel values, call reply on the next step. Do not guess either value.",
-            &RecordingApproval::deny(),
-            4,
-        )
-        .await;
-    assert_finished(&reads, "reply");
-    let read_tools = parsed_tools(&reads);
+fn assert_catalog_is_restricted(events: &[AgentEvent]) {
+    let allowed = ITERATION_ONE_TOOLS
+        .iter()
+        .map(|descriptor| descriptor.name)
+        .collect::<BTreeSet<_>>();
+    for call in parsed_calls(events) {
+        assert!(
+            allowed.contains(call.tool.as_str()),
+            "non-YoreBot tool escaped restricted catalog: {call:#?}"
+        );
+    }
+}
+
+fn assert_no_mutating_tools(events: &[AgentEvent]) {
+    for tool in ["os.fs.mkdir", "os.fs.move"] {
+        assert_eq!(
+            count_tool(events, tool),
+            0,
+            "unexpected {tool}: {events:#?}"
+        );
+    }
+}
+
+fn parsed_calls(events: &[AgentEvent]) -> Vec<&ToolCallPayload> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallParsed { call, .. } => Some(call),
+            _ => None,
+        })
+        .collect()
+}
+
+fn count_tool(events: &[AgentEvent], tool: &str) -> usize {
+    parsed_calls(events)
+        .into_iter()
+        .filter(|call| call.tool == tool)
+        .count()
+}
+
+fn assert_tool_string_arg(events: &[AgentEvent], tool: &str, field: &str, expected: &str) {
+    let calls = parsed_calls(events)
+        .into_iter()
+        .filter(|call| call.tool == tool)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1, "expected one {tool} call: {events:#?}");
+    assert_eq!(
+        calls[0].args.get(field).and_then(serde_json::Value::as_str),
+        Some(expected),
+        "{tool}.{field} must use the exact relative path: {events:#?}"
+    );
+}
+
+fn assert_singleton_tool(events: &[AgentEvent], tool: &str) {
     assert!(
-        read_tools
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallParsed {
+                call,
+                batch_size: 1,
+                ..
+            } if call.tool == tool
+        )),
+        "{tool} must run alone so its result is observed before the proposal: {events:#?}"
+    );
+}
+
+fn assert_tool_summary_mentions(events: &[AgentEvent], tool: &str, values: &[&str]) {
+    let summary = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolCallExecuted { result } if result.call.tool == tool => {
+                Some(result.outcome.summary.as_str())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing {tool} outcome: {events:#?}"));
+    for value in values {
+        assert!(
+            summary.contains(value),
+            "{tool} did not observe {value}: {summary}"
+        );
+    }
+}
+
+fn assert_reply_mentions(events: &[AgentEvent], expected_paths: &[&str]) {
+    let reply = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentEvent::AssistantReply { text } => Some(text.replace('\\', "/")),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing assistant reply: {events:#?}"));
+    for path in expected_paths {
+        assert!(reply.contains(path), "reply omits {path:?}: {reply:?}");
+    }
+}
+
+fn assert_reply_mentions_any(events: &[AgentEvent], expected_terms: &[&str]) {
+    let reply = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentEvent::AssistantReply { text } => Some(text.replace('\\', "/")),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing assistant reply: {events:#?}"));
+    let normalized = reply.to_ascii_lowercase();
+    assert!(
+        expected_terms
             .iter()
-            .filter(|tool| tool.as_str() == "os.fs.read")
-            .count()
-            >= 2,
-        "expected both fixture reads, got {read_tools:?}"
+            .any(|term| normalized.contains(&term.to_ascii_lowercase())),
+        "reply omits restoration semantics {expected_terms:?}: {reply:?}"
     );
-    assert!(executed_summaries(&reads)
-        .iter()
-        .any(|summary| summary.contains("SENTINEL_ALPHA_481")));
-    assert!(executed_summaries(&reads)
-        .iter()
-        .any(|summary| summary.contains("SENTINEL_BETA_927")));
+}
 
-    let write_approval = RecordingApproval::allow();
-    let write = harness
-        .run(
-            "model-write-allow",
-            "On the first step, call exactly one tool: os.fs.write with path approved.txt and content WRITE_SENTINEL_314159. Do not add a newline and do not call reply on that step. After observing the successful write, call reply on the next step.",
-            &write_approval,
-            4,
-        )
-        .await;
-    assert_finished(&write, "reply");
+fn assert_tool_status(events: &[AgentEvent], tool: &str, status: ToolStatus) {
     assert!(
-        harness.workspace.path().join("approved.txt").is_file(),
-        "approved write produced no file; events: {write:#?}"
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolCallExecuted { result }
+                if result.call.tool == tool && result.outcome.status == status
+        )),
+        "expected {tool} status {status:?}; events: {events:#?}"
     );
-    assert_eq!(
-        harness.workspace.read("approved.txt"),
-        b"WRITE_SENTINEL_314159"
-    );
-    assert_eq!(
-        write_approval.requests().len(),
-        1,
-        "expected one write approval; events: {write:#?}"
-    );
-    assert_tool_status(&write, "os.fs.write", ToolStatus::Ok);
+}
 
-    let deny_approval = RecordingApproval::deny();
-    let denied = harness
-        .run(
-            "model-write-deny",
-            "On the first step, call exactly one tool: os.fs.write with path denied.txt and content FORBIDDEN. Do not call reply on that step. After the write is denied, do not retry it; call reply on the next step.",
-            &deny_approval,
-            4,
-        )
-        .await;
-    assert_finished(&denied, "reply");
-    assert!(!harness.workspace.path().join("denied.txt").exists());
-    assert_eq!(
-        deny_approval.requests().len(),
-        1,
-        "expected one denied write approval; events: {denied:#?}"
+fn assert_finished(events: &[AgentEvent], expected_reason: &str) {
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TurnFinished { reason, .. } if reason == expected_reason
+        )),
+        "expected TurnFinished({expected_reason:?}), got {events:#?}"
     );
-    assert_tool_status(&denied, "os.fs.write", ToolStatus::Denied);
-
-    harness.workspace.write("rare.txt", "RARE_SCHEMA_SENTINEL");
-    let rare = harness
-        .run(
-            "model-tool-view",
-            "On the first step, call exactly one tool: tool.view with name os.fs.hash. Do not call os.fs.hash or reply on that step. After the full schema is loaded, call exactly one os.fs.hash for path rare.txt with algorithm sha256. After observing the hash result, call reply on the following step.",
-            &RecordingApproval::deny(),
-            5,
-        )
-        .await;
-    assert_finished(&rare, "reply");
-    let rare_tools = parsed_tools(&rare);
-    let view_index = rare_tools
-        .iter()
-        .position(|tool| tool == "tool.view")
-        .unwrap_or_else(|| panic!("model must call tool.view; events: {rare:#?}"));
-    let hash_index = rare_tools
-        .iter()
-        .position(|tool| tool == "os.fs.hash")
-        .unwrap_or_else(|| panic!("model must call os.fs.hash; events: {rare:#?}"));
-    assert!(view_index < hash_index);
-    assert_tool_status(&rare, "os.fs.hash", ToolStatus::Ok);
 }
 
 fn required_env_path(name: &str) -> PathBuf {
     let value = std::env::var(name)
-        .unwrap_or_else(|_| panic!("{name} is required for managed_model_agent_scenarios"));
+        .unwrap_or_else(|_| panic!("{name} is required for downloads_agent_acceptance"));
     let path = PathBuf::from(value);
     assert!(path.is_file(), "{name} is not a file: {}", path.display());
     path
 }
 
 fn assert_target_model(path: &Path) {
-    let normalized = path.to_string_lossy().to_ascii_lowercase();
-    assert!(
-        normalized.contains("qwen3_5-9b") && normalized.contains("iq4_xs"),
-        "ATOMIC_AGENT_E2E_MODEL must point to the exact {REQUIRED_MODEL_ID} GGUF; got {}",
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(REQUIRED_MODEL_FILENAME),
+        "ATOMIC_AGENT_E2E_MODEL must be exact pinned {REQUIRED_MODEL_FILENAME}; got {}",
         path.display()
     );
+}
+
+fn assert_server_version(server_path: &Path) {
+    let output = version_output(server_path).unwrap_or_else(|error| {
+        panic!(
+            "failed to inspect pinned llama-server {}: {error}",
+            server_path.display()
+        )
+    });
+    assert!(
+        output.contains(&format!("(build {REQUIRED_BACKEND_BUILD},"))
+            || output.contains(&format!("version: b{REQUIRED_BACKEND_BUILD}")),
+        "llama-server must report upstream build {REQUIRED_BACKEND_BUILD}; got {output:?}"
+    );
+}
+
+fn version_output(server_path: &Path) -> Result<String, String> {
+    let output = Command::new(server_path)
+        .current_dir(server_path.parent().ok_or("llama-server has no parent")?)
+        .arg("--version")
+        .output()
+        .map_err(|error| error.to_string())?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return Err(format!("{}: {}", output.status, text.trim()));
+    }
+    Ok(text)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -338,16 +845,7 @@ fn reserve_loopback_port() -> u16 {
 }
 
 fn print_provenance(server_path: &Path, model_path: &Path) {
-    let version = Command::new(server_path)
-        .arg("--version")
-        .output()
-        .map(|output| {
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-        })
+    let version = version_output(server_path)
         .unwrap_or_else(|error| format!("<version probe failed: {error}>"));
     let version_file = server_path
         .ancestors()
@@ -356,10 +854,10 @@ fn print_provenance(server_path: &Path, model_path: &Path) {
         .find(|candidate| candidate.is_file());
     let version_file_text = version_file
         .as_ref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_else(|| "<not found>".into());
     eprintln!(
-        "managed agent E2E provenance:\nmodel_id={REQUIRED_MODEL_ID}\nmodel_path={}\nllama_server={}\nllama_server_version={}\nversion_file={:?}\nversion_file_contents={}",
+        "Downloads Agent acceptance provenance:\nmodel_id={REQUIRED_MODEL_ID}\nmodel_path={}\nllama_server={}\nllama_server_version={}\nversion_file={:?}\nversion_file_contents={}",
         model_path.display(),
         server_path.display(),
         version.trim(),
@@ -401,47 +899,9 @@ async fn wait_for_health(
     }
 }
 
-fn parsed_tools(events: &[AgentEvent]) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            AgentEvent::ToolCallParsed { call, .. } => Some(call.tool.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn executed_summaries(events: &[AgentEvent]) -> Vec<&str> {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            AgentEvent::ToolCallExecuted { result } => Some(result.outcome.summary.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn assert_tool_status(events: &[AgentEvent], tool: &str, status: ToolStatus) {
-    assert!(events.iter().any(|event| matches!(
-        event,
-        AgentEvent::ToolCallExecuted { result }
-            if result.call.tool == tool && result.outcome.status == status
-    )));
-}
-
-fn assert_finished(events: &[AgentEvent], expected_reason: &str) {
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AgentEvent::TurnFinished { reason, .. } if reason == expected_reason
-        )),
-        "expected TurnFinished({expected_reason:?}), got {events:#?}"
-    );
-}
-
 fn read_log_tail(path: &Path) -> String {
     const MAX_LOG_CHARS: usize = 20_000;
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = fs::read_to_string(path) else {
         return "<unavailable>".into();
     };
     let chars = content.chars().collect::<Vec<_>>();

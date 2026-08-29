@@ -224,6 +224,7 @@ jobs:
           yarn build:web
           cargo test --manifest-path src-tauri/plugins/tauri-plugin-llamacpp-upstream/Cargo.toml binary_version
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::grammar::tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::filesystem_move_is_non_overwriting_and_reversible -- --test-threads=1
@@ -268,17 +269,11 @@ jobs:
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
 
-  pinned-model-smoke:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify pinned model on pinned CPU runtime
+      - name: Verify Downloads Agent on pinned model and CPU runtime
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot
+          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot -RunDownloadsAgentAcceptance

@@ -97,6 +97,15 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   assert.doesNotMatch(script, /taskkill/i)
   assert.doesNotMatch(script, /if\s*\(\$launchedApp\.ExitCode/i)
   assert.doesNotMatch(script, /exited cleanly/i)
+  const backendReadyPoll = script.slice(
+    script.indexOf("$backendReady = 'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64'"),
+    script.indexOf('New-Item -ItemType Directory -Path $installSibling, $dataSibling')
+  )
+  assert.match(backendReadyPoll, /\$backendReadyDeadline = \(Get-Date\)\.AddSeconds\(60\)/)
+  assert.match(backendReadyPoll, /\$launchedApp\.Refresh\(\)/)
+  assert.match(backendReadyPoll, /if \(\$launchedApp\.HasExited\)/)
+  assert.match(backendReadyPoll, /Start-Sleep -Milliseconds 500/)
+  assert.match(backendReadyPoll, /while \(\(Get-Date\) -lt \$backendReadyDeadline\)/)
   assert.ok(
     script.indexOf('Stop-ExactProcesses -Path $appPath') <
       script.indexOf('$launchedApp = Start-Process')
@@ -135,10 +144,72 @@ test('model smoke verifies both downloads before an exact outbound block and loo
   assert.doesNotMatch(script, /Stop-Process\s+-Name/i)
 })
 
+test('manual model ritual exercises the real Downloads Agent contract', () => {
+  const script = read('scripts/test-windows-pinned-model.ps1')
+  const harness = read('src-tauri/src/core/agent/model_e2e.rs')
+  const runner = read('src-tauri/src/core/agent/runner.rs')
+  const workflow = read('.github/workflows/windows-internal.yml')
+  const skill = read(
+    'src-tauri/resources/agent-skills/downloads-organizer/SKILL.md'
+  )
+
+  for (const value of [
+    'downloads_agent_acceptance',
+    'Qwen3.5-9B-Q4_K_M.gguf',
+    'downloads-organizer',
+    'restrict_to_yorebot_catalog: true',
+    'AgentSessionState::new("downloads-agent-acceptance")',
+    'assert_no_mutating_tools',
+    'assert_allow_once_requests',
+    'assert_snapshot',
+    'undo',
+    'denied',
+  ]) {
+    assert.ok(harness.includes(value), `missing Downloads Agent guard: ${value}`)
+  }
+  assert.doesNotMatch(harness, /IQ4_XS|turbo3/)
+  assert.match(script, /\[switch\] \$RunDownloadsAgentAcceptance/)
+  assert.match(script, /ATOMIC_AGENT_E2E_LLAMA_SERVER/)
+  assert.match(script, /ATOMIC_AGENT_E2E_MODEL/)
+  assert.match(script, /downloads_agent_acceptance/)
+  assert.match(harness, /run_turn_with_completion_deadline/)
+  assert.match(harness, /PRODUCTION_TOOL_STEP_COMPLETION_DEADLINE/)
+  assert.match(runner, /TEST_TOOL_STEP_COMPLETION_DEADLINE/)
+  assert.match(runner, /Duration::from_millis\(100\)/)
+  assert.match(runner, /Duration::from_secs\(180\)/)
+  assert.match(harness, /detect_model_profile/)
+  assert.match(harness, /build_stable_prefix_for_profile/)
+  assert.doesNotMatch(harness, /"--threads"/)
+  assert.match(workflow, /core::agent::grammar::tests::/)
+  assert.ok(
+    script.indexOf('$PSNativeCommandUseErrorActionPreference = $true') <
+      script.indexOf('downloads_agent_acceptance')
+  )
+  assert.match(harness, /"-ngl",\s*"0"/)
+  assert.match(workflow, /-RunDownloadsAgentAcceptance/)
+  assert.ok(
+    workflow.indexOf('- name: Test product seams') <
+      workflow.indexOf('- name: Verify Downloads Agent on pinned model')
+  )
+  assert.match(skill, /Do not mutate anything in the same step as the proposal/)
+  assert.match(skill, /Every mutation must reach YoreBot's approval dialog/)
+  assert.match(skill, /Use `\.` for the connected root and relative child paths/)
+  assert.match(harness, /Call `os\.fs\.list` exactly once/)
+  assert.match(harness, /assert_tool_string_arg\(&plan, "os\.fs\.list", "path", "\."\)/)
+  assert.match(harness, /Use only these relative paths: `quarterly-report\.pdf`/)
+  assert.doesNotMatch(
+    `${script}\n${harness}\n${workflow}`,
+    /tokens?\s*(\/|per)\s*second|throughput|benchmark/i
+  )
+})
+
 test('heavy model smoke is manual-only while installer smoke stays on PR builds', () => {
   const internal = read('.github/workflows/windows-internal.yml')
   const installerUpload = internal.indexOf('- uses: actions/upload-artifact@v4')
   const installerSmoke = internal.indexOf('- name: Smoke fresh NSIS install and uninstall')
+  const agentSmoke = internal.indexOf(
+    '- name: Verify Downloads Agent on pinned model and CPU runtime'
+  )
   const productSeams = internal.slice(
     internal.indexOf('- name: Test product seams'),
     internal.indexOf('- name: Build unsigned internal NSIS installer')
@@ -157,9 +228,13 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   assert.match(productSeams, /\$PSNativeCommandUseErrorActionPreference = \$true/)
   assert.ok(installerUpload >= 0 && installerUpload < installerSmoke)
   assert.match(internal.slice(installerUpload, installerSmoke), /if: always\(\)/)
-  assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)
-  assert.match(internal, /^\s{4}if: github\.event_name == 'workflow_dispatch'\s*$/m)
-  assert.match(internal, /^\s*\.\/scripts\/test-windows-pinned-model\.ps1\b/m)
+  assert.ok(agentSmoke > installerSmoke)
+  assert.match(
+    internal.slice(agentSmoke, agentSmoke + 500),
+    /if: github\.event_name == 'workflow_dispatch'/
+  )
+  assert.match(internal, /test-windows-pinned-model\.ps1 .* -RunDownloadsAgentAcceptance/)
+  assert.doesNotMatch(internal, /^\s{2}pinned-model-smoke:\s*$/m)
   assert.equal(
     existsSync(resolve(root, '.github/workflows/windows-pinned-model-smoke.yml')),
     false

@@ -202,11 +202,29 @@ try {
     if ([System.IO.Path]::GetFullPath($liveApp.Path) -ine $appPath) {
         throw 'Observed YoreBot process did not run from the installed path'
     }
-    $startupOutput = @($appStdoutPath, $appStderrPath) |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-        ForEach-Object { Get-Content -LiteralPath $_ -Raw -ErrorAction SilentlyContinue }
     $backendReady = 'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64'
-    if (($startupOutput -join "`n") -notlike "*$backendReady*") {
+    $backendReadyDeadline = (Get-Date).AddSeconds(60)
+    $backendReadyObserved = $false
+    do {
+        $launchedApp.Refresh()
+        if ($launchedApp.HasExited) {
+            Write-LaunchDiagnostics `
+                -StartedAt $launchStartedAt `
+                -Process $launchedApp `
+                -StdoutPath $appStdoutPath `
+                -StderrPath $appStderrPath
+            throw "YoreBot exited while waiting for its bundled backend with exit code $($launchedApp.ExitCode)"
+        }
+        $startupOutput = @($appStdoutPath, $appStderrPath) |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            ForEach-Object { Get-Content -LiteralPath $_ -Raw -ErrorAction SilentlyContinue }
+        if (($startupOutput -join "`n") -like "*$backendReady*") {
+            $backendReadyObserved = $true
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $backendReadyDeadline)
+    if (-not $backendReadyObserved) {
         Write-LaunchDiagnostics `
             -StartedAt $launchStartedAt `
             -Process $launchedApp `
