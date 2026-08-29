@@ -112,6 +112,10 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   const internal = read('.github/workflows/windows-internal.yml')
   const installerUpload = internal.indexOf('- uses: actions/upload-artifact@v4')
   const installerSmoke = internal.indexOf('- name: Smoke fresh NSIS install and uninstall')
+  const productSeams = internal.slice(
+    internal.indexOf('- name: Test product seams'),
+    internal.indexOf('- name: Build unsigned internal NSIS installer')
+  )
 
   assert.match(internal, /^\s*pull_request:\s*$/m)
   assert.match(internal, /test-windows-installer\.ps1/)
@@ -123,6 +127,7 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   )
   assert.match(internal, /Pinned runtime --version output/)
   assert.match(internal, /versionExitCode -ne 0/)
+  assert.match(productSeams, /\$PSNativeCommandUseErrorActionPreference = \$true/)
   assert.ok(installerUpload >= 0 && installerUpload < installerSmoke)
   assert.match(internal.slice(installerUpload, installerSmoke), /if: always\(\)/)
   assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)

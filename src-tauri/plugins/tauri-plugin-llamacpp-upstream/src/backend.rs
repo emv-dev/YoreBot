@@ -267,7 +267,10 @@ fn parse_binary_version(output: &str) -> Option<u32> {
             .chars()
             .take_while(|character| character.is_ascii_digit())
             .collect::<String>();
-        if digits.is_empty() {
+        let separator = value[digits.len()..].chars().next();
+        if digits.is_empty()
+            || !matches!(separator, None | Some('-')) && !separator.is_some_and(char::is_whitespace)
+        {
             None
         } else {
             digits.parse::<u32>().ok()
@@ -281,6 +284,7 @@ fn parse_binary_version(output: &str) -> Option<u32> {
             }
         }
         if let Some((_, value)) = line.split_once("(build ") {
+            let value = value.split(',').next().unwrap_or(value);
             if let Some(version) = parse_number(value) {
                 return Some(version);
             }
@@ -2001,7 +2005,7 @@ mod tests {
     fn test_parse_binary_version() {
         assert_eq!(
             parse_binary_version(
-                "startup: version: unknown (build 10431, commit 1692f9e50)\nbuilt with MSVC"
+                "\nversion: 0.1.0-dev (build 10431, commit 1692f9e50)\r\nbuilt with Clang 20.1.8 for Windows x86_64\r\n"
             ),
             Some(10431)
         );
