@@ -241,21 +241,167 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   )
 })
 
-test('every multi-command PowerShell workflow step fails fast', () => {
-  const blocks = multilinePwshBlocks(
-    read('.github/workflows/windows-internal.yml')
+test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublished', () => {
+  const signed = read('.github/workflows/windows-signed-candidate.yml')
+  const blocked = read('.github/workflows/release.yml')
+  const cargo = read('src-tauri/Cargo.toml')
+
+  assert.match(signed, /^on:\n\s+workflow_dispatch:\s*$/m)
+  assert.doesNotMatch(signed, /^\s+(push|pull_request|release|schedule):/m)
+  assert.match(signed, /^\s+contents: read\s*$/m)
+  assert.match(signed, /^\s+id-token: write\s*$/m)
+  assert.doesNotMatch(signed, /contents: write/)
+  assert.match(signed, /^\s+environment: windows-production-signing\s*$/m)
+  assert.match(signed, /confirmation:/)
+  assert.match(signed, /SIGN_YOREBOT_WINDOWS_CANDIDATE/)
+
+  for (const variable of [
+    'AZURE_CLIENT_ID',
+    'AZURE_TENANT_ID',
+    'AZURE_SUBSCRIPTION_ID',
+    'AZURE_ARTIFACT_SIGNING_ENDPOINT',
+    'AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME',
+    'AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME',
+    'YOREBOT_WINDOWS_SIGNER_SUBJECT',
+  ]) {
+    assert.match(signed, new RegExp(`vars\\.${variable}`), `missing variable: ${variable}`)
+  }
+  assert.doesNotMatch(signed, /secrets\.|AZURE_CLIENT_SECRET|\bcreds:/)
+
+  assert.match(
+    signed,
+    /azure\/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c/
   )
-  assert.ok(blocks.length > 0)
-  for (const { name, statements } of blocks) {
-    assert.equal(
-      statements[0].trim(),
-      "$ErrorActionPreference = 'Stop'",
-      `${name} must set terminating PowerShell errors first`
-    )
-    assert.equal(
-      statements[1].trim(),
-      '$PSNativeCommandUseErrorActionPreference = $true',
-      `${name} must fail on native command errors before doing work`
-    )
+  assert.equal(
+    signed.match(/azure\/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c/g)?.length,
+    2
+  )
+  assert.match(
+    signed,
+    /azure\/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82/g
+  )
+  assert.equal(
+    signed.match(/azure\/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82/g)?.length,
+    2
+  )
+
+  const preflight = signed.indexOf('- name: Refuse unconfigured or unconfirmed signing')
+  const login = signed.indexOf('- name: Azure OIDC login')
+  const build = signed.indexOf('- name: Build release app without bundle')
+  const signApp = signed.indexOf('- name: Sign main app executable')
+  const clearAppSession = signed.indexOf('- name: Clear app-signing Azure session')
+  const bundle = signed.indexOf('- name: Bundle signed NSIS candidate')
+  const signInstaller = signed.indexOf('- name: Sign NSIS installer')
+  const clearInstallerSession = signed.indexOf(
+    '- name: Clear installer-signing Azure session'
+  )
+  const verify = signed.indexOf('- name: Verify signed candidate by fresh install')
+  assert.ok(
+    preflight >= 0 &&
+      preflight < build &&
+      build < login &&
+      build < signApp &&
+      login < signApp &&
+      signApp < clearAppSession &&
+      clearAppSession < bundle &&
+      bundle < signInstaller &&
+      signInstaller < clearInstallerSession &&
+      clearInstallerSession < verify
+  )
+  assert.match(cargo, /^default-run\s*=\s*"Atomic-Chat"\s*$/m)
+  assert.match(signed, /files-folder-filter: Atomic-Chat\.exe/)
+  assert.match(signed, /files-folder: \$\{\{ github\.workspace \}\}\\src-tauri\\target\\release\\bundle\\nsis/)
+  assert.equal(
+    signed.match(/exclude-azure-cli-credential: false/g)?.length,
+    2
+  )
+  assert.equal(
+    signed.match(/exclude-interactive-browser-credential: true/g)?.length,
+    2
+  )
+  assert.match(signed, /tauri build --no-bundle --ci/)
+  assert.match(signed, /tauri bundle --bundles nsis --ci/)
+  assert.doesNotMatch(
+    signed,
+    /upload-artifact|gh release|upload-release|create-release|retention-days|msix/i
+  )
+
+  assert.match(blocked, /^on:\n\s+workflow_dispatch:\s*$/m)
+  assert.match(blocked, /^\s+contents: read\s*$/m)
+  assert.match(blocked, /Refuse an unsigned public release/)
+  assert.match(blocked, /exit 1/)
+  assert.doesNotMatch(blocked, /id-token: write|contents: write/)
+})
+
+test('signed installer smoke requires valid exact timestamped signatures', () => {
+  const script = read('scripts/test-windows-installer.ps1')
+
+  for (const value of [
+    '[string] $ExpectedSignerSubject',
+    'Get-AuthenticodeSignature',
+    "Status -ne 'Valid'",
+    'SignerCertificate.Subject -cne $ExpectedSignerSubject',
+    'TimeStamperCertificate',
+    'Assert-AuthenticodeSignature -Path $installer',
+    'Assert-AuthenticodeSignature -Path $appPath',
+  ]) {
+    assert.ok(script.includes(value), `missing signature guard: ${value}`)
+  }
+  assert.ok(
+    script.indexOf('Assert-AuthenticodeSignature -Path $installer') <
+      script.indexOf('$install = Start-Process')
+  )
+  assert.ok(
+    script.indexOf('Assert-AuthenticodeSignature -Path $appPath') >
+      script.indexOf("if (-not (Test-Path -LiteralPath $uninstallKey))")
+  )
+})
+
+test('Windows signing setup documents the human-only Azure boundary', () => {
+  const doc = read('docs/WINDOWS_SIGNING.md')
+
+  for (const value of [
+    'windows-production-signing',
+    'repo:emv-dev/YoreBot:environment:windows-production-signing',
+    'Artifact Signing Certificate Profile Signer',
+    'AZURE_CLIENT_ID',
+    'AZURE_TENANT_ID',
+    'AZURE_SUBSCRIPTION_ID',
+    'AZURE_ARTIFACT_SIGNING_ENDPOINT',
+    'AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME',
+    'AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME',
+    'YOREBOT_WINDOWS_SIGNER_SUBJECT',
+    'SIGN_YOREBOT_WINDOWS_CANDIDATE',
+  ]) {
+    assert.ok(doc.includes(value), `missing signing setup boundary: ${value}`)
+  }
+  assert.match(doc, /OIDC/i)
+  assert.match(doc, /cost|billing|charge/i)
+  assert.match(doc, /does not create|will not create/i)
+  assert.match(doc, /not a public release|does not publish/i)
+  assert.match(doc, /public repository/i)
+  assert.match(doc, /does not upload/i)
+  assert.doesNotMatch(doc, /client secret/i)
+})
+
+test('every multi-command PowerShell workflow step fails fast', () => {
+  for (const workflow of [
+    '.github/workflows/windows-internal.yml',
+    '.github/workflows/windows-signed-candidate.yml',
+  ]) {
+    const blocks = multilinePwshBlocks(read(workflow))
+    assert.ok(blocks.length > 0)
+    for (const { name, statements } of blocks) {
+      assert.equal(
+        statements[0].trim(),
+        "$ErrorActionPreference = 'Stop'",
+        `${workflow}: ${name} must set terminating PowerShell errors first`
+      )
+      assert.equal(
+        statements[1].trim(),
+        '$PSNativeCommandUseErrorActionPreference = $true',
+        `${workflow}: ${name} must fail on native command errors before doing work`
+      )
+    }
   }
 })

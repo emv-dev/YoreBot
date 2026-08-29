@@ -6,7 +6,9 @@ param(
     [string] $InstallerPath,
 
     [Parameter(Mandatory)]
-    [string] $WorkRoot
+    [string] $WorkRoot,
+
+    [string] $ExpectedSignerSubject = ''
 )
 
 Set-StrictMode -Version Latest
@@ -129,6 +131,28 @@ function Write-LaunchDiagnostics {
     }
 }
 
+function Assert-AuthenticodeSignature {
+    param([Parameter(Mandatory)][string] $Path)
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSignerSubject)) { return }
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne 'Valid') {
+        throw "Authenticode signature is not valid for $Path (status: $($signature.Status))"
+    }
+    if ($null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -cne $ExpectedSignerSubject) {
+        $actualSubject = if ($null -eq $signature.SignerCertificate) {
+            '<missing>'
+        } else {
+            $signature.SignerCertificate.Subject
+        }
+        throw "Unexpected Authenticode signer for $Path (expected '$ExpectedSignerSubject', got '$actualSubject')"
+    }
+    if ($null -eq $signature.TimeStamperCertificate) {
+        throw "Authenticode signature has no trusted timestamp for $Path"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Installer does not exist: $installer"
 }
@@ -141,6 +165,7 @@ if (Test-Path -LiteralPath $uninstallKey) {
 if ($installRoot -match '\s') {
     throw 'NSIS smoke work path must not contain whitespace because /D must be the final raw argument'
 }
+Assert-AuthenticodeSignature -Path $installer
 
 try {
     New-Item -ItemType Directory -Path $workRootFull | Out-Null
@@ -170,6 +195,7 @@ try {
     if (-not (Test-Path -LiteralPath $uninstallKey)) {
         throw 'YoreBot uninstall registration is missing'
     }
+    Assert-AuthenticodeSignature -Path $appPath
     $registration = Get-ItemProperty -LiteralPath $uninstallKey
     if ($registration.DisplayName -ne 'YoreBot' -or
         $registration.InstallLocation.Trim('"') -ine $installRoot) {

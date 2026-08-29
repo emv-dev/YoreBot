@@ -309,6 +309,28 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Prepare manual Azure-signed NSIS candidates without publishing
+- **Context:** D8 requires a Windows trust path, but YoreBot has no verified
+  signing identity, configured GitHub environment, or authority to purchase a
+  certificate or publish a release.
+- **Decision:** Keep the existing Tauri/NSIS package and prepare a manual-only
+  Azure Artifact Signing workflow. Authenticate through the protected
+  `windows-production-signing` environment and GitHub OIDC, sign only the main
+  app executable before bundling and the NSIS installer afterward, then require
+  exact signer, timestamp, fresh-install, startup, uninstall, and sibling-safety
+  evidence. Keep the public release workflow blocked.
+- **Consequences:** Once a human completes Azure identity, role, profile,
+  environment, variable, and billing setup, CI can verify a signed candidate
+  without a stored Azure credential. Because this repository is public and its
+  Actions artifacts are readable by repository readers, CI uploads nothing and
+  discards the candidate with the hosted runner. Bundled helper binaries remain
+  outside the signing claim; a valid signature does not prove immediate
+  SmartScreen reputation or authorize publication.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`docs/WINDOWS_SIGNING.md`](docs/WINDOWS_SIGNING.md),
+  [`.github/workflows/windows-signed-candidate.yml`](.github/workflows/windows-signed-candidate.yml).
+
 ### 2026-08-29 — Prove the pinned Downloads Agent flow manually
 - **Context:** The existing heavy smoke proved only one plain model response;
   issue #1 also needs evidence that the shipped model, runtime, skill, catalog,
