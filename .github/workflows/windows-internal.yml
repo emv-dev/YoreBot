@@ -35,8 +35,15 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
+        run: yarn install --immutable
+
+      - name: Build core package required by extensions
+        shell: pwsh
+        run: yarn build:core
+
+      - name: Install extension dependencies
+        shell: pwsh
         run: |
-          yarn install --immutable
           Push-Location extensions
           yarn install --immutable
           Pop-Location
@@ -76,7 +83,6 @@ jobs:
         shell: pwsh
         run: |
           yarn build:tauri:plugin:api
-          yarn build:core
           yarn build:extensions:win32
           yarn download:bin
           yarn copy:assets:tauri
