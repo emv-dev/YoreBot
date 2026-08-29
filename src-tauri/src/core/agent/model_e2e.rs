@@ -248,7 +248,7 @@ async fn downloads_agent_acceptance() {
     let apply = harness
         .run_main(
             "downloads-apply",
-            "I explicitly accept that exact proposal. Use only these relative paths: `quarterly-report.pdf`, `Documents`, and `Documents/quarterly-report.pdf`. Create `Documents`, then move `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not move `mystery.download`. After both accepted actions succeed, list `.` and `Documents`, then reply with the exact moved and untouched paths.",
+            "I explicitly accept that exact proposal. Use only these relative paths: `quarterly-report.pdf`, `Documents`, and `Documents/quarterly-report.pdf`. Do not announce intentions or call `reply` before executing. Start by calling `os.fs.mkdir` exactly once for `Documents`; after it succeeds, call `os.fs.move` exactly once from `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not move `mystery.download`. After both accepted actions succeed, list `.` and `Documents`, then call `reply` with the exact moved and untouched paths.",
             None,
             &mutation_approval,
             8,
