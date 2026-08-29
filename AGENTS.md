@@ -320,12 +320,15 @@ Append-only. Newest at top. Each entry follows this shape:
   key only in Windows Credential Manager and grant full Agent access only in
   the current process after a successful live check. Migrate persisted v1
   entitlement data to usage/ownership-only v2 and ignore its former paid
-  fields.
+  fields. Serialize access commands and discard superseded UI responses so a
+  later Forget always wins over an older startup refresh.
 - **Consequences:** YoreBot handles no card data, API secret, account, webhook,
   or payment backend. Startup/offline/invalid checks fall back to Free Chat plus
   2,000,000 Agent tokens/day. Other operating systems have no plaintext
   credential fallback. Provider setup and real checkout remain human-owned,
-  unverified launch gates.
+  unverified launch gates. Forget can wait for an in-flight verification's
+  bounded timeout, but its completed Free state cannot be reversed by that
+  older request.
 - **Owner:** team.
 - **Links:** [Issue #6](https://github.com/emv-dev/YoreBot/issues/6),
   [`docs/GUMROAD_ACCESS.md`](docs/GUMROAD_ACCESS.md),

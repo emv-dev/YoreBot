@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import YoreBotAccessDialog from '@/containers/dialogs/YoreBotAccessDialog'
@@ -6,6 +6,7 @@ import type { YoreBotAccessStatus } from '@/services/yorebot-access'
 
 const mocks = vi.hoisted(() => ({
   getStatus: vi.fn(),
+  refresh: vi.fn(),
   restore: vi.fn(),
   forget: vi.fn(),
   openUrl: vi.fn(),
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/services/yorebot-access', () => ({
   getYoreBotAccessStatus: mocks.getStatus,
+  refreshSavedYoreBotAccess: mocks.refresh,
   restoreYoreBotAccess: mocks.restore,
   forgetYoreBotAccess: mocks.forget,
 }))
@@ -41,6 +43,7 @@ const fullStatus: YoreBotAccessStatus = {
 describe('YoreBotAccessDialog', () => {
   beforeEach(() => {
     mocks.getStatus.mockReset().mockResolvedValue(freeStatus)
+    mocks.refresh.mockReset().mockResolvedValue(fullStatus)
     mocks.restore.mockReset().mockResolvedValue(fullStatus)
     mocks.forget.mockReset().mockResolvedValue(freeStatus)
     mocks.openUrl.mockReset().mockResolvedValue(undefined)
@@ -54,6 +57,7 @@ describe('YoreBotAccessDialog', () => {
         onOpenChange={vi.fn()}
         status={freeStatus}
         onStatusChange={onStatusChange}
+        requestVersion={{ current: 0 }}
       />
     )
 
@@ -70,11 +74,19 @@ describe('YoreBotAccessDialog', () => {
     expect(
       screen.getByRole('button', { name: 'Restore access' })
     ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Manage membership' })
+    ).toBeInTheDocument()
     expect(screen.getByLabelText('Access key')).toHaveAttribute(
       'type',
       'password'
     )
-    expect(document.body.textContent).not.toMatch(/provider|model|gumroad/i)
+    expect(document.body.textContent).not.toMatch(/provider|model/i)
+    expect(
+      screen.getByText(
+        'Saved securely on this computer and sent only to Gumroad to verify access.'
+      )
+    ).toBeInTheDocument()
 
     await userEvent.click(
       screen.getByRole('button', {
@@ -95,6 +107,7 @@ describe('YoreBotAccessDialog', () => {
         onOpenChange={vi.fn()}
         status={freeStatus}
         onStatusChange={onStatusChange}
+        requestVersion={{ current: 0 }}
       />
     )
 
@@ -122,6 +135,7 @@ describe('YoreBotAccessDialog', () => {
           manageUrl: null,
         }}
         onStatusChange={vi.fn()}
+        requestVersion={{ current: 0 }}
       />
     )
 
@@ -143,14 +157,138 @@ describe('YoreBotAccessDialog', () => {
         onOpenChange={vi.fn()}
         status={fullStatus}
         onStatusChange={onStatusChange}
+        requestVersion={{ current: 0 }}
       />
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Manage membership' }))
     expect(mocks.openUrl).toHaveBeenCalledWith(fullStatus.manageUrl)
+    expect(
+      screen.queryByRole('button', { name: 'Try 7 days - then $20/month' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '$200/year' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Restore access' })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Access key')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Retry access' })
+    ).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Forget saved access' }))
     await waitFor(() => expect(mocks.forget).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(freeStatus))
+  })
+
+  it('keeps membership management available while access is free', () => {
+    render(
+      <YoreBotAccessDialog
+        open
+        onOpenChange={vi.fn()}
+        status={freeStatus}
+        onStatusChange={vi.fn()}
+        requestVersion={{ current: 0 }}
+      />
+    )
+
+    expect(
+      screen.getByRole('button', { name: 'Manage membership' })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Forget saved access' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('prevents another purchase while a saved key awaits verification', async () => {
+    const savedFreeStatus = {
+      ...freeStatus,
+      hasSavedKey: true,
+    }
+    const onStatusChange = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <YoreBotAccessDialog
+        open
+        onOpenChange={vi.fn()}
+        status={savedFreeStatus}
+        onStatusChange={onStatusChange}
+        requestVersion={{ current: 0 }}
+      />
+    )
+
+    expect(
+      screen.queryByRole('button', { name: 'Try 7 days - then $20/month' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '$200/year' })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Access key')).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Manage membership' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Forget saved access' })
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Retry access' }))
+    expect(mocks.refresh).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(fullStatus))
+  })
+
+  it('keeps Forget available when build configuration is missing', () => {
+    render(
+      <YoreBotAccessDialog
+        open
+        onOpenChange={vi.fn()}
+        status={{
+          ...freeStatus,
+          hasSavedKey: true,
+          paidControlsAvailable: false,
+          monthlyCheckoutUrl: null,
+          yearlyCheckoutUrl: null,
+          manageUrl: null,
+        }}
+        onStatusChange={vi.fn()}
+        requestVersion={{ current: 0 }}
+      />
+    )
+
+    expect(
+      screen.getByRole('button', { name: 'Forget saved access' })
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry access' })).toBeDisabled()
+    expect(
+      screen.queryByRole('button', { name: 'Manage membership' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not let an older status response overwrite a completed forget', async () => {
+    let resolveStatus: (status: YoreBotAccessStatus) => void = () => {}
+    mocks.getStatus.mockReturnValue(
+      new Promise<YoreBotAccessStatus>((resolve) => {
+        resolveStatus = resolve
+      })
+    )
+    const onStatusChange = vi.fn()
+    render(
+      <YoreBotAccessDialog
+        open
+        onOpenChange={vi.fn()}
+        status={fullStatus}
+        onStatusChange={onStatusChange}
+        requestVersion={{ current: 0 }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Forget saved access' }))
+    await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(freeStatus))
+    await act(async () => {
+      resolveStatus(fullStatus)
+      await Promise.resolve()
+    })
+
+    expect(onStatusChange).toHaveBeenLastCalledWith(freeStatus)
   })
 })

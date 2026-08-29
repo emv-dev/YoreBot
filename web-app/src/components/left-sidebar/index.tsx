@@ -9,7 +9,7 @@ import { TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { localStorageKey } from '@/constants/localStorage'
 import { route } from '@/constants/routes'
 import { useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import YoreBotAboutDialog from '@/containers/dialogs/YoreBotAboutDialog'
 import YoreBotAccessDialog from '@/containers/dialogs/YoreBotAccessDialog'
 import {
@@ -41,12 +41,19 @@ export function LeftSidebar() {
   const [accessStatus, setAccessStatus] = useState(
     EMPTY_YOREBOT_ACCESS_STATUS
   )
+  const accessRequestVersion = useRef(0)
 
   useEffect(() => {
     let cancelled = false
+    const requestVersion = ++accessRequestVersion.current
     void refreshSavedYoreBotAccess()
       .then((status) => {
-        if (!cancelled) setAccessStatus(status)
+        if (
+          !cancelled &&
+          accessRequestVersion.current === requestVersion
+        ) {
+          setAccessStatus(status)
+        }
       })
       .catch(() => {})
     return () => {
@@ -143,6 +150,7 @@ export function LeftSidebar() {
         onOpenChange={setAccessOpen}
         status={accessStatus}
         onStatusChange={setAccessStatus}
+        requestVersion={accessRequestVersion}
       />
     </div>
   )

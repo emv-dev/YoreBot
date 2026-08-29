@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -18,6 +18,7 @@ const MAX_LICENSE_BYTES: usize = 256;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 64 * 1024;
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+static ACCESS_COMMANDS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(target_os = "windows")]
 const PRODUCT_ID: Option<&str> = option_env!("YOREBOT_GUMROAD_PRODUCT_ID");
@@ -66,18 +67,31 @@ impl AccessConfig {
         {
             return Err(AccessFailure::NotConfigured);
         }
+        let (monthly_checkout_url, monthly_product) =
+            checked_checkout_url(monthly_checkout_url, "monthly")?;
+        let (yearly_checkout_url, yearly_product) =
+            checked_checkout_url(yearly_checkout_url, "yearly")?;
+        if monthly_product != yearly_product {
+            return Err(AccessFailure::NotConfigured);
+        }
         Ok(Self {
             product_id: product_id.to_owned(),
-            monthly_checkout_url: checked_checkout_url(monthly_checkout_url, "monthly")?,
-            yearly_checkout_url: checked_checkout_url(yearly_checkout_url, "yearly")?,
-            manage_url: checked_gumroad_url(manage_url)?,
+            monthly_checkout_url,
+            yearly_checkout_url,
+            manage_url: checked_manage_url(manage_url)?,
         })
     }
 }
 
-fn checked_checkout_url(value: &str, recurrence: &str) -> Result<String, AccessFailure> {
-    let checked = checked_gumroad_url(value)?;
-    let parsed = Url::parse(&checked).map_err(|_| AccessFailure::NotConfigured)?;
+fn checked_checkout_url(value: &str, recurrence: &str) -> Result<(String, String), AccessFailure> {
+    let parsed = checked_gumroad_url(value)?;
+    let segments = parsed
+        .path_segments()
+        .ok_or(AccessFailure::NotConfigured)?
+        .collect::<Vec<_>>();
+    if segments.len() != 2 || segments[0] != "l" || segments[1].is_empty() {
+        return Err(AccessFailure::NotConfigured);
+    }
     let mut recurrence_count = 0;
     let mut wanted_count = 0;
     for (key, value) in parsed.query_pairs() {
@@ -102,10 +116,25 @@ fn checked_checkout_url(value: &str, recurrence: &str) -> Result<String, AccessF
     if recurrence_count != 1 || wanted_count != 1 {
         return Err(AccessFailure::NotConfigured);
     }
-    Ok(checked)
+    let identity = format!(
+        "{}{}",
+        parsed.host_str().ok_or(AccessFailure::NotConfigured)?,
+        parsed.path()
+    );
+    Ok((parsed.to_string(), identity))
 }
 
-fn checked_gumroad_url(value: &str) -> Result<String, AccessFailure> {
+fn checked_manage_url(value: &str) -> Result<String, AccessFailure> {
+    let parsed = checked_gumroad_url(value)?;
+    if parsed.path() != "/library"
+        || !matches!(parsed.host_str(), Some("gumroad.com" | "app.gumroad.com"))
+    {
+        return Err(AccessFailure::NotConfigured);
+    }
+    Ok(parsed.to_string())
+}
+
+fn checked_gumroad_url(value: &str) -> Result<Url, AccessFailure> {
     if value.len() > 2_048 {
         return Err(AccessFailure::NotConfigured);
     }
@@ -114,11 +143,13 @@ fn checked_gumroad_url(value: &str) -> Result<String, AccessFailure> {
     if parsed.scheme() != "https"
         || parsed.username() != ""
         || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.fragment().is_some()
         || !(host == "gumroad.com" || host.ends_with(".gumroad.com"))
     {
         return Err(AccessFailure::NotConfigured);
     }
-    Ok(parsed.to_string())
+    Ok(parsed)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +185,14 @@ fn status_for(
         yearly_checkout_url: config.map(|value| value.yearly_checkout_url.clone()),
         manage_url: config.map(|value| value.manage_url.clone()),
     }
+}
+
+async fn serialized_access<T>(
+    coordinator: &tokio::sync::Mutex<()>,
+    operation: impl Future<Output = T>,
+) -> T {
+    let _guard = coordinator.lock().await;
+    operation.await
 }
 
 #[async_trait]
@@ -385,10 +424,13 @@ pub async fn yorebot_access_status(
     state: State<'_, AppState>,
 ) -> Result<YoreBotAccessStatus, String> {
     let config = AccessConfig::from_build();
-    Ok(current_status(
-        &state.agent_entitlements,
-        config.as_ref(),
-        &WindowsCredentialVault,
+    Ok(serialized_access(
+        &ACCESS_COMMANDS,
+        current_status(
+            &state.agent_entitlements,
+            config.as_ref(),
+            &WindowsCredentialVault,
+        ),
     )
     .await)
 }
@@ -400,12 +442,15 @@ pub async fn yorebot_access_restore(
 ) -> Result<YoreBotAccessStatus, String> {
     let config = AccessConfig::from_build();
     let verifier = GumroadVerifier::new().map_err(public_restore_error)?;
-    restore_with(
-        &state.agent_entitlements,
-        config.as_ref(),
-        &verifier,
-        &WindowsCredentialVault,
-        &license_key,
+    serialized_access(
+        &ACCESS_COMMANDS,
+        restore_with(
+            &state.agent_entitlements,
+            config.as_ref(),
+            &verifier,
+            &WindowsCredentialVault,
+            &license_key,
+        ),
     )
     .await
     .map_err(public_restore_error)
@@ -416,26 +461,29 @@ pub async fn yorebot_access_refresh_saved(
     state: State<'_, AppState>,
 ) -> Result<YoreBotAccessStatus, String> {
     let config = AccessConfig::from_build();
-    if let Ok(verifier) = GumroadVerifier::new() {
-        let _ = refresh_saved_with(
+    Ok(serialized_access(&ACCESS_COMMANDS, async {
+        if let Ok(verifier) = GumroadVerifier::new() {
+            let _ = refresh_saved_with(
+                &state.agent_entitlements,
+                config.as_ref(),
+                &verifier,
+                &WindowsCredentialVault,
+            )
+            .await;
+        } else {
+            state
+                .agent_entitlements
+                .lock()
+                .await
+                .set_verified_subscription(false);
+        }
+        current_status(
             &state.agent_entitlements,
             config.as_ref(),
-            &verifier,
             &WindowsCredentialVault,
         )
-        .await;
-    } else {
-        state
-            .agent_entitlements
-            .lock()
-            .await
-            .set_verified_subscription(false);
-    }
-    Ok(current_status(
-        &state.agent_entitlements,
-        config.as_ref(),
-        &WindowsCredentialVault,
-    )
+        .await
+    })
     .await)
 }
 
@@ -444,10 +492,13 @@ pub async fn yorebot_access_forget(
     state: State<'_, AppState>,
 ) -> Result<YoreBotAccessStatus, String> {
     let config = AccessConfig::from_build();
-    forget_with(
-        &state.agent_entitlements,
-        config.as_ref(),
-        &WindowsCredentialVault,
+    serialized_access(
+        &ACCESS_COMMANDS,
+        forget_with(
+            &state.agent_entitlements,
+            config.as_ref(),
+            &WindowsCredentialVault,
+        ),
     )
     .await
     .map_err(|_| "Saved access could not be forgotten.".into())
@@ -455,11 +506,15 @@ pub async fn yorebot_access_forget(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Mutex as StdMutex};
+    use std::{
+        fs,
+        sync::{Arc, Mutex as StdMutex},
+    };
 
     use super::*;
     use crate::core::agent::entitlements::EntitlementStore;
     use tempfile::TempDir;
+    use tokio::sync::Notify;
 
     fn config() -> AccessConfig {
         AccessConfig::new(
@@ -566,7 +621,7 @@ mod tests {
         assert!(AccessConfig::new(
             "product-123",
             "https://yorebot.gumroad.com/l/access?monthly=true&wanted=true",
-            "https://gumroad.com/l/access?yearly=true&wanted=true",
+            "https://yorebot.gumroad.com/l/access?yearly=true&wanted=true",
             "https://app.gumroad.com/library",
         )
         .is_ok());
@@ -617,6 +672,54 @@ mod tests {
                 Some(AccessFailure::NotConfigured)
             );
         }
+
+        for (monthly_url, yearly_url, manage_url) in [
+            (
+                "https://gumroad.com/?monthly=true&wanted=true",
+                "https://gumroad.com/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+            (
+                "https://gumroad.com/l/?monthly=true&wanted=true",
+                "https://gumroad.com/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+            (
+                "https://gumroad.com/l/monthly-product?monthly=true&wanted=true",
+                "https://gumroad.com/l/yearly-product?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+            (
+                "https://creator-one.gumroad.com/l/access?monthly=true&wanted=true",
+                "https://creator-two.gumroad.com/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+            (
+                "https://gumroad.com/l/access?monthly=true&wanted=true",
+                "https://gumroad.com/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/l/access",
+            ),
+            (
+                "https://gumroad.com/l/access?monthly=true&wanted=true",
+                "https://gumroad.com/l/access?yearly=true&wanted=true",
+                "https://creator.gumroad.com/library",
+            ),
+            (
+                "https://gumroad.com:444/l/access?monthly=true&wanted=true",
+                "https://gumroad.com:444/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+            (
+                "https://gumroad.com/l/access?monthly=true&wanted=true#monthly",
+                "https://gumroad.com/l/access?yearly=true&wanted=true",
+                "https://gumroad.com/library",
+            ),
+        ] {
+            assert_eq!(
+                AccessConfig::new("product-123", monthly_url, yearly_url, manage_url).err(),
+                Some(AccessFailure::NotConfigured)
+            );
+        }
     }
 
     #[derive(Default)]
@@ -663,6 +766,24 @@ mod tests {
             _license_key: &str,
         ) -> Result<(), AccessFailure> {
             self.0
+        }
+    }
+
+    struct DelayedVerifier {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl MembershipVerifier for DelayedVerifier {
+        async fn verify(
+            &self,
+            _config: &AccessConfig,
+            _license_key: &str,
+        ) -> Result<(), AccessFailure> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(())
         }
     }
 
@@ -800,6 +921,40 @@ mod tests {
 
         assert!(!status.full_access);
         assert!(!status.has_saved_key);
+        assert_eq!(vault.load().unwrap(), None);
+        assert!(!entitlements.lock().await.has_verified_subscription());
+    }
+
+    #[tokio::test]
+    async fn forget_wins_over_an_older_delayed_startup_refresh() {
+        let entitlements = entitlements();
+        let vault = FakeVault::with("SAVED-LICENSE-123");
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let verifier = DelayedVerifier {
+            started: started.clone(),
+            release: release.clone(),
+        };
+        let access_config = config();
+
+        let coordinator = tokio::sync::Mutex::new(());
+        let refresh = serialized_access(
+            &coordinator,
+            refresh_saved_with(&entitlements, Some(&access_config), &verifier, &vault),
+        );
+        let forget = async {
+            started.notified().await;
+            release.notify_one();
+            serialized_access(
+                &coordinator,
+                forget_with(&entitlements, Some(&access_config), &vault),
+            )
+            .await
+        };
+        let (refresh, forget) = tokio::join!(refresh, forget);
+
+        assert!(refresh.unwrap().full_access);
+        assert!(!forget.unwrap().full_access);
         assert_eq!(vault.load().unwrap(), None);
         assert!(!entitlements.lock().await.has_verified_subscription());
     }

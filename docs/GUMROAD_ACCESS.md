@@ -17,12 +17,16 @@ YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL
 YOREBOT_GUMROAD_MANAGE_URL
 ```
 
-All four are required. URLs must be HTTPS Gumroad URLs. The monthly checkout
-must contain `monthly=true&wanted=true`; the yearly checkout must contain
-`yearly=true&wanted=true`. These are Gumroad's official direct-checkout plan
-selectors ([reference](https://gumroad.com/help/article/270-url-parameters)).
-The values are public build configuration, not secrets. YoreBot has no Gumroad
-API token.
+All four are required. Both checkout URLs must use the same Gumroad host and
+exact `/l/<permalink>` product path. The monthly URL must contain
+`monthly=true&wanted=true`; the yearly URL must contain
+`yearly=true&wanted=true`. The manage URL must be
+`https://gumroad.com/library` or `https://app.gumroad.com/library`. Non-default
+Explicit ports and fragments are rejected. These are Gumroad's official direct-checkout
+plan selectors ([reference](https://gumroad.com/help/article/270-url-parameters)).
+The opaque product id must be copied from that same product and is checked on
+every verification. These values are public build configuration, not secrets.
+YoreBot has no Gumroad API token.
 
 Restore sends only the configured product id and entered license key to
 Gumroad's license verification endpoint with usage counting disabled. YoreBot
