@@ -309,6 +309,23 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Gate checkout on recorded immutable model provenance
+- **Context:** Access checkout did not identify the included local model and
+  remained available when setup had not recorded a reviewed model pin.
+- **Decision:** Resolve the recorded model id only against the existing pinned
+  manifest, show its base model, developer, and license before checkout, and
+  keep repository, immutable revision, and full SHA-256 in collapsed details.
+  Hide only checkout when the record is missing or unrecognized; make no
+  network request and leave free Chat, Restore, and Manage unchanged.
+- **Consequences:** Buyers can verify the exact included model before leaving
+  the app, while missing or tampered setup state fails before purchase without
+  blocking free or existing-membership paths. Hosted checkout provenance
+  remains a separate boundary.
+- **Owner:** team.
+- **Links:** [Issue #13](https://github.com/emv-dev/YoreBot/issues/13),
+  [`web-app/src/containers/dialogs/YoreBotAccessDialog.tsx`](web-app/src/containers/dialogs/YoreBotAccessDialog.tsx),
+  [`web-app/src/constants/yorebot-models.ts`](web-app/src/constants/yorebot-models.ts).
+
 ### 2026-08-29 — Reuse one fail-closed Windows model acceptance ritual
 - **Context:** Issue #10 needs the automatic 32 GB model path to run the same
   Downloads Agent proof as the already-proven ordinary path, while the standard
