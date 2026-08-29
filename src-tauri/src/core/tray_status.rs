@@ -23,16 +23,13 @@ use tauri::{
 ///
 /// The Pico-style layout splits the server block into a status row
 /// (`Server Running` / `Server Stopped`) and a separate, copy-icon-prefixed URL
-/// row, with an actionable "Stop Server" button beneath. The model block uses
-/// a disabled "Model" header above its value to mirror Pico's section labels;
-/// the RAM block uses a text caption above a segmented bar so the bar — not
-/// the longest text — drives the menu width.
+/// row. The model block uses a disabled "Model" header above its value to
+/// mirror Pico's section labels; the RAM block uses a text caption above a
+/// segmented bar so the bar — not the longest text — drives the menu width.
 #[cfg(desktop)]
 pub struct TrayHandles {
     pub server: IconMenuItem<Wry>,
     pub server_url_row: IconMenuItem<Wry>,
-    /// Actionable "Stop Server" row. Hidden when the server is stopped.
-    pub stop_button: MenuItem<Wry>,
     /// Disabled "Model" header (always shows the literal label).
     pub model_label: MenuItem<Wry>,
     /// Mutable model name displayed beneath the header.
@@ -43,11 +40,6 @@ pub struct TrayHandles {
     /// server is currently stopped, and remains the source of truth instead of
     /// re-parsing the row's display text).
     pub server_url: Mutex<String>,
-    /// Last reported running state. The tray click handler reads this to
-    /// decide whether the Stop/Start button should emit `tray-stop-server` or
-    /// `tray-start-server`, and whether to label the row "Stop Server" or
-    /// "Start Server" between status pushes.
-    pub is_running: Mutex<bool>,
 }
 
 #[cfg(desktop)]
@@ -444,7 +436,7 @@ pub async fn update_tray_status(app: AppHandle, payload: TrayStatusPayload) -> R
     let state = app.state::<crate::core::state::AppState>();
     let guard = state.tray_handles.lock().map_err(|e| e.to_string())?;
     let Some(handles) = guard.as_ref() else {
-        // Tray not installed (non-macOS without ENABLE_SYSTEM_TRAY_ICON, or setup failed).
+        // Tray not installed (non-macOS or setup failed).
         return Ok(());
     };
 
@@ -494,29 +486,6 @@ pub async fn update_tray_status(app: AppHandle, payload: TrayStatusPayload) -> R
         }
     }
 
-    // Stop / Start toggle: re-label the row depending on whether the server
-    // is currently running, so a single menu slot acts as the inverse of the
-    // current state. The actual start/stop is dispatched to the frontend via
-    // `tray-stop-server` / `tray-start-server` events (see
-    // `setup::setup_tray`), which is why we also stash `is_running` here for
-    // the click handler to read.
-    let stop_text = if payload.server_running {
-        "Stop Server"
-    } else {
-        "Start Server"
-    };
-    handles
-        .stop_button
-        .set_text(stop_text)
-        .map_err(|e| e.to_string())?;
-    handles
-        .stop_button
-        .set_enabled(true)
-        .map_err(|e| e.to_string())?;
-    if let Ok(mut flag) = handles.is_running.lock() {
-        *flag = payload.server_running;
-    }
-
     // Model block: a disabled "Model" header (kept static) above the actual
     // model name. Splitting these into two rows mirrors Pico's section labels
     // and lets us truncate just the value while keeping the header crisp.
@@ -564,8 +533,7 @@ pub async fn update_tray_status(_payload: serde_json::Value) -> Result<(), Strin
 ///
 /// On macOS this shells out to `pbcopy` to avoid pulling in
 /// `tauri-plugin-clipboard-manager` purely for this one feature. On other
-/// desktops the tray is env-gated and currently opt-in, so this path stays
-/// a best-effort fallback there.
+/// desktops this path remains a best-effort fallback for future tray use.
 #[cfg(desktop)]
 pub fn write_clipboard(text: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]

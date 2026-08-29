@@ -30,7 +30,7 @@
   ;
   ; Stop only helpers whose executable belongs to this install or YoreBot's
   ; data folder. Never terminate another app's llama.cpp, Bun, or uv process.
-  nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name llama-server,bun,uv -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -like \"$INSTDIR*\" -or $_.Path -like \"$APPDATA\YoreBot*\" } catch { $false } } | Stop-Process -Force -ErrorAction SilentlyContinue"'
+  nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name llama-server,bun,uv -ErrorAction SilentlyContinue | Where-Object { try { ([System.IO.Path]::GetFullPath($_.Path) -ieq [System.IO.Path]::GetFullPath(\"$INSTDIR\").TrimEnd([char]92)) -or [System.IO.Path]::GetFullPath($_.Path).StartsWith([System.IO.Path]::GetFullPath(\"$INSTDIR\").TrimEnd([char]92) + [char]92, [System.StringComparison]::OrdinalIgnoreCase) -or ([System.IO.Path]::GetFullPath($_.Path) -ieq [System.IO.Path]::GetFullPath(\"$APPDATA\YoreBot\").TrimEnd([char]92)) -or [System.IO.Path]::GetFullPath($_.Path).StartsWith([System.IO.Path]::GetFullPath(\"$APPDATA\YoreBot\").TrimEnd([char]92) + [char]92, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force -ErrorAction SilentlyContinue"'
   Pop $0
 
   ; msedgewebview2.exe is shared with other Edge-based apps on the system —

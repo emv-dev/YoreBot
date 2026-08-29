@@ -490,18 +490,10 @@ pub fn run() {
             store.save().expect("Failed to save store");
             // Migration completed
 
-            // Tray icon: always on for macOS (matches menu-bar product conventions);
-            // env-gated on Windows/Linux where design polish is deferred.
+            // Keep the menu-bar status surface macOS-only for the YoreBot MVP.
             #[cfg(target_os = "macos")]
             {
                 log::info!("Enabling system tray icon (macOS)");
-                if let Err(e) = setup::setup_tray(app) {
-                    log::warn!("Failed to set up system tray: {e}");
-                }
-            }
-            #[cfg(all(desktop, not(target_os = "macos")))]
-            if option_env!("ENABLE_SYSTEM_TRAY_ICON").unwrap_or("false") == "true" {
-                log::info!("Enabling system tray icon");
                 if let Err(e) = setup::setup_tray(app) {
                     log::warn!("Failed to set up system tray: {e}");
                 }
