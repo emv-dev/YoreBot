@@ -170,6 +170,7 @@ jobs:
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
+          yarn build:web
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
