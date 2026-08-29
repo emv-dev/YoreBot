@@ -110,7 +110,6 @@ import ReasoningToggle from '@/containers/ReasoningToggle'
 import { ttftPreBegin } from '@/lib/ttft-timing'
 import { ModelFactory } from '@/lib/model-factory'
 import { canSelectChatAgentMode } from '@/containers/ChatAgentModeSwitch'
-import { AgentApprovalModeSelect } from '@/containers/AgentApprovalModeSelect'
 import { AgentExternalFolderButton } from '@/containers/AgentExternalFolderButton'
 import { AgentSkillSlashMenu } from '@/containers/AgentSkillSlashMenu'
 import {
@@ -208,10 +207,6 @@ const ChatInput = memo(function ChatInput({
     [agentSkillSlashQuery?.query, agentSkills]
   )
   const setAgentMode = useAgentMode((state) => state.setAgentMode)
-  const approvalMode = useAgentMode(
-    (state) => state.approvalModes[agentModeKey] ?? 'manual'
-  )
-  const setApprovalMode = useAgentMode((state) => state.setApprovalMode)
 
   useEffect(() => {
     if (!isAgentProviderSelected && isAgentMode) {
@@ -254,13 +249,6 @@ const ChatInput = memo(function ChatInput({
   useEffect(() => {
     setAgentSkillActiveIndex(0)
   }, [agentSkillSlashQuery?.query])
-
-  const handleApprovalModeChange = useCallback(
-    (mode: 'manual' | 'skip') => {
-      setApprovalMode(agentModeKey, mode)
-    },
-    [agentModeKey, setApprovalMode]
-  )
 
   // Get current thread messages for token counting
   const threadMessages = useMessages(
@@ -2581,27 +2569,7 @@ const ChatInput = memo(function ChatInput({
                   </DropdownMenu>
 
                   {effectiveAgentMode && (
-                    <>
-                      <AgentExternalFolderButton workspaceKey={agentModeKey} />
-                      <AgentApprovalModeSelect
-                        mode={approvalMode}
-                        onChange={handleApprovalModeChange}
-                        manualSelectedLabel={t(
-                          'chat:agentApprovals.manualSelected'
-                        )}
-                        manualLabel={t('chat:agentApprovals.manual')}
-                        manualDescription={t(
-                          'chat:agentApprovals.manualDescription'
-                        )}
-                        skipSelectedLabel={t(
-                          'chat:agentApprovals.skipSelected'
-                        )}
-                        skipLabel={t('chat:agentApprovals.skip')}
-                        skipDescription={t(
-                          'chat:agentApprovals.skipDescription'
-                        )}
-                      />
-                    </>
+                    <AgentExternalFolderButton workspaceKey={agentModeKey} />
                   )}
                   {/* {model?.provider === 'llamacpp' && loadingModel ? (
                   <ModelLoader />

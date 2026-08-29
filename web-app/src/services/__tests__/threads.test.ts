@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DefaultThreadsService } from '../threads/default'
 import { ExtensionManager } from '@/lib/extension'
 import { ConversationalExtension, ExtensionTypeEnum } from '@janhq/core'
+import { LOCAL_LLAMACPP_PROVIDER } from '@/lib/utils'
 
 // Mock ExtensionManager
 vi.mock('@/lib/extension', () => ({
@@ -359,7 +360,10 @@ describe('DefaultThreadsService', () => {
         title: 'New Thread',
         updated: 1234567890,
         assistants: [
-          { ...realAssistant, model: { id: '*', engine: 'llamacpp' } },
+          {
+            ...realAssistant,
+            model: { id: '*', engine: LOCAL_LLAMACPP_PROVIDER },
+          },
         ],
         metadata: { order: 1 },
       }
@@ -374,7 +378,7 @@ describe('DefaultThreadsService', () => {
         expect.objectContaining({
           assistants: [
             expect.objectContaining({
-              model: { id: '*', engine: 'llamacpp' },
+              model: { id: '*', engine: LOCAL_LLAMACPP_PROVIDER },
             }),
           ],
         })
@@ -442,7 +446,7 @@ describe('DefaultThreadsService', () => {
             {
               model: { id: 'gpt-4', engine: 'openai' },
               id: 'jan',
-              name: 'Atomic Chat',
+              name: 'YoreBot',
             },
           ],
         })
@@ -471,7 +475,7 @@ describe('DefaultThreadsService', () => {
         expect.objectContaining({
           assistants: [
             expect.objectContaining({
-              model: { id: '*', engine: 'llamacpp' },
+              model: { id: '*', engine: LOCAL_LLAMACPP_PROVIDER },
             }),
           ],
         })

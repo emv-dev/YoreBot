@@ -35,6 +35,7 @@ pub async fn execute(
         "os.fs.write" => write(args, context).await,
         "os.fs.mkdir" => mkdir(args, context).await,
         "os.fs.edit" => edit(args, context).await,
+        "os.fs.move" => move_path(args, context).await,
         "os.fs.trash" => trash(args, context).await,
         "os.fs.patch" => patch(args, context).await,
         _ => Err(ToolOutcome::error(format!("Unsupported fs tool: {tool}"))),
@@ -520,6 +521,193 @@ async fn edit(args: &Value, context: &ToolContext<'_>) -> Result<ToolOutcome, To
             "bytesAfter": bytes_after,
         })),
     })
+}
+
+pub(super) async fn text_mutation_preview(
+    call: &crate::core::agent::types::ToolCallPayload,
+) -> Result<String, String> {
+    let path = PathBuf::from(required_string(&call.args, "path")?);
+    let original = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(error)
+            if call.tool == "os.fs.write" && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            String::new()
+        }
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let updated = match call.tool.as_str() {
+        "os.fs.write" => {
+            let content = call
+                .args
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Missing string argument `content`".to_string())?;
+            if call.args.get("mode").and_then(Value::as_str) == Some("append") {
+                format!("{original}{content}")
+            } else {
+                content.to_string()
+            }
+        }
+        "os.fs.edit" => {
+            let old = required_string(&call.args, "oldString")?;
+            let new = call
+                .args
+                .get("newString")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Missing string argument `newString`".to_string())?;
+            let match_count = original.matches(&old).count();
+            let replace_all = call
+                .args
+                .get("replaceAll")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if match_count == 0 || (!replace_all && match_count != 1) {
+                return Err(if replace_all {
+                    "oldString was not found; file was not changed".into()
+                } else {
+                    "oldString must match exactly once; file was not changed".into()
+                });
+            }
+            if replace_all {
+                original.replace(&old, new)
+            } else {
+                original.replacen(&old, new, 1)
+            }
+        }
+        _ => return Err(format!("{} has no text mutation preview", call.tool)),
+    };
+    let label = display_relative_path(&strip_windows_verbatim_prefix(&path));
+    Ok(format_unified_diff(&label, &label, &original, &updated))
+}
+
+async fn move_path(args: &Value, context: &ToolContext<'_>) -> Result<ToolOutcome, ToolOutcome> {
+    let source = resolve_path(
+        context.working_dir,
+        &required_string(args, "source").map_err(ToolOutcome::error)?,
+    );
+    let destination = resolve_path(
+        context.working_dir,
+        &required_string(args, "destination").map_err(ToolOutcome::error)?,
+    );
+    let source_for_move = source.clone();
+    let destination_for_move = destination.clone();
+    tokio::task::spawn_blocking(move || rename_noreplace(&source_for_move, &destination_for_move))
+        .await
+        .map_err(|error| ToolOutcome::error(format!("Move task failed: {error}")))?
+        .map_err(|error| ToolOutcome::error(format!("Move failed: {error}")))?;
+    Ok(ToolOutcome {
+        status: ToolStatus::Ok,
+        summary: format!("Moved {} to {}", source.display(), destination.display()),
+        details: Some(serde_json::json!({
+            "source": source,
+            "destination": destination,
+            "undo": {
+                "tool": "os.fs.move",
+                "args": { "source": destination, "destination": source }
+            }
+        })),
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "source contains NUL")
+    })?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination contains NUL")
+    })?;
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "source contains NUL")
+    })?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination contains NUL")
+    })?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android",
+    windows
+)))]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if destination.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ));
+    }
+    std::fs::rename(source, destination)
 }
 
 async fn trash(args: &Value, context: &ToolContext<'_>) -> Result<ToolOutcome, ToolOutcome> {

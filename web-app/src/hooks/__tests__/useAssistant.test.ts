@@ -148,7 +148,7 @@ describe('useAssistant', () => {
     const { result } = renderHook(() => useAssistant())
 
     expect(result.current.currentAssistant.id).toBe('jan')
-    expect(result.current.currentAssistant.name).toBe('Atomic Chat')
+    expect(result.current.currentAssistant.name).toBe('YoreBot')
     expect(result.current.currentAssistant.avatar).toBe(
       '/images/transparent-logo.png'
     )

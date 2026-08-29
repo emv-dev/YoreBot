@@ -525,7 +525,7 @@ async fn filesystem_read_document_extracts_docx_and_honors_character_cap() {
 }
 
 #[tokio::test]
-async fn filesystem_mkdir_creates_empty_directories_without_approval() {
+async fn filesystem_mkdir_requires_approval() {
     let fixture = ToolFixture::allowed();
     let created = fixture
         .call("os.fs.mkdir", serde_json::json!({"path": "parent/empty"}))
@@ -534,7 +534,7 @@ async fn filesystem_mkdir_creates_empty_directories_without_approval() {
     let path = fixture.workspace.path().join("parent/empty");
     assert!(path.is_dir());
     assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
-    assert!(fixture.approval.requests().is_empty());
+    assert_eq!(fixture.approval.requests().len(), 1);
 
     let non_recursive = fixture
         .call(
@@ -549,9 +549,107 @@ async fn filesystem_mkdir_creates_empty_directories_without_approval() {
     let denied_outcome = denied
         .call("os.fs.mkdir", serde_json::json!({"path": "must-not-exist"}))
         .await;
-    assert_eq!(denied_outcome.status, ToolStatus::Ok);
-    assert!(denied.workspace.path().join("must-not-exist").is_dir());
-    assert!(denied.approval.requests().is_empty());
+    assert_eq!(denied_outcome.status, ToolStatus::Denied);
+    assert!(!denied.workspace.path().join("must-not-exist").exists());
+    assert_eq!(denied.approval.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn filesystem_move_is_non_overwriting_and_reversible() {
+    let fixture = ToolFixture::allowed();
+    fixture.workspace.write("source.txt", "source\n");
+    fixture.workspace.write("occupied.txt", "occupied\n");
+
+    let occupied = fixture
+        .call(
+            "os.fs.move",
+            serde_json::json!({"source": "source.txt", "destination": "occupied.txt"}),
+        )
+        .await;
+    assert_eq!(occupied.status, ToolStatus::Error);
+    assert_eq!(fixture.workspace.read("source.txt"), b"source\n");
+    assert_eq!(fixture.workspace.read("occupied.txt"), b"occupied\n");
+
+    let moved = fixture
+        .call(
+            "os.fs.move",
+            serde_json::json!({"source": "source.txt", "destination": "moved.txt"}),
+        )
+        .await;
+    assert_eq!(moved.status, ToolStatus::Ok);
+    assert!(!fixture.workspace.path().join("source.txt").exists());
+    assert_eq!(fixture.workspace.read("moved.txt"), b"source\n");
+
+    let undone = fixture
+        .call(
+            "os.fs.move",
+            serde_json::json!({"source": "moved.txt", "destination": "source.txt"}),
+        )
+        .await;
+    assert_eq!(undone.status, ToolStatus::Ok);
+    assert_eq!(fixture.workspace.read("source.txt"), b"source\n");
+    assert!(!fixture.workspace.path().join("moved.txt").exists());
+}
+
+#[tokio::test]
+async fn denied_mutations_leave_the_workspace_and_desktop_unchanged() {
+    let fixture = ToolFixture::denied();
+    fixture.workspace.write("keep.txt", "before\n");
+    fixture.workspace.write("move-me.txt", "move\n");
+    fixture.workspace.write("trash-me.txt", "trash\n");
+    let patch = "--- keep.txt\n+++ keep.txt\n@@ -1 +1 @@\n-before\n+after\n";
+
+    for (tool, args) in [
+        (
+            "os.fs.write",
+            serde_json::json!({"path": "keep.txt", "content": "replaced\n"}),
+        ),
+        (
+            "os.fs.edit",
+            serde_json::json!({
+                "path": "keep.txt",
+                "oldString": "before",
+                "newString": "edited"
+            }),
+        ),
+        ("os.fs.mkdir", serde_json::json!({"path": "must-not-exist"})),
+        (
+            "os.fs.move",
+            serde_json::json!({"source": "move-me.txt", "destination": "moved.txt"}),
+        ),
+        (
+            "os.fs.trash",
+            serde_json::json!({"paths": ["trash-me.txt"]}),
+        ),
+        (
+            "os.fs.patch",
+            serde_json::json!({"patch": patch, "apply": true}),
+        ),
+        (
+            "os.shell.run",
+            serde_json::json!({"cmd": "definitely-not-executed"}),
+        ),
+        (
+            "os.clipboard.write",
+            serde_json::json!({"text": "must not be copied"}),
+        ),
+        (
+            "os.notify",
+            serde_json::json!({"title": "must not be shown"}),
+        ),
+    ] {
+        let outcome = fixture.call(tool, args).await;
+        assert_eq!(outcome.status, ToolStatus::Denied, "{tool}");
+    }
+
+    assert_eq!(fixture.workspace.read("keep.txt"), b"before\n");
+    assert_eq!(fixture.workspace.read("move-me.txt"), b"move\n");
+    assert_eq!(fixture.workspace.read("trash-me.txt"), b"trash\n");
+    assert!(!fixture.workspace.path().join("moved.txt").exists());
+    assert!(!fixture.workspace.path().join("must-not-exist").exists());
+    assert!(fixture.desktop.clipboard_writes().is_empty());
+    assert!(fixture.desktop.notifications().is_empty());
+    assert_eq!(fixture.approval.requests().len(), 9);
 }
 
 #[tokio::test]

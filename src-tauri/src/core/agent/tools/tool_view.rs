@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::required_string;
-use crate::core::agent::prompt::{ToolDescriptor, ToolTier, ITERATION_ONE_TOOLS};
+use crate::core::agent::prompt::{ToolDescriptor, ToolTier, UPSTREAM_TOOL_DESCRIPTORS};
 use crate::core::agent::types::ToolOutcome;
 
 pub const LOADED_TOOLS_CAP: usize = 8;
@@ -73,7 +73,7 @@ pub async fn execute(args: &Value, loaded_tools: &LoadedTools) -> Result<ToolOut
 }
 
 pub fn descriptor_for(name: &str) -> Option<&'static ToolDescriptor> {
-    ITERATION_ONE_TOOLS
+    UPSTREAM_TOOL_DESCRIPTORS
         .iter()
         .find(|descriptor| descriptor.name == name)
 }
@@ -132,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn evicts_oldest_loaded_tool_at_cap() {
         let loaded = LoadedTools::default();
-        let rare = ITERATION_ONE_TOOLS
+        let rare = UPSTREAM_TOOL_DESCRIPTORS
             .iter()
             .filter(|descriptor| descriptor.tier == ToolTier::Rare)
             .take(LOADED_TOOLS_CAP + 1)

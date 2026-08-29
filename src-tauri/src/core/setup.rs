@@ -424,7 +424,7 @@ pub fn setup_tray(app: &App) -> tauri::Result<TrayIcon> {
         None::<&str>,
     )?;
 
-    let show_i = MenuItem::with_id(app.handle(), "open", "Open Atomic Chat", true, None::<&str>)?;
+    let show_i = MenuItem::with_id(app.handle(), "open", "Open YoreBot", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app.handle(), "quit", "Quit", true, None::<&str>)?;
 
     //* Three separators carve the menu into Pico-style sections so the rows

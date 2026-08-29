@@ -97,9 +97,8 @@ fn render_skills_catalog(descriptors: &[SkillDescriptor]) -> String {
 }
 
 /// Environment description rendered into the `### capabilities` block.
-/// Ported from `CapabilitiesSummary` (`stable-prefix.ts`). `platform` mirrors
-/// the NodeJS values (`"win32"` / `"darwin"` / `"linux"`) so the Windows hint
-/// gating matches the TS source verbatim.
+/// Fields retained from the upstream summary stay available to callers, but
+/// the YoreBot MVP advertises only capabilities in its fixed local catalog.
 #[derive(Debug, Clone)]
 pub struct CapabilitiesSummary {
     pub platform: String,
@@ -123,28 +122,21 @@ const DEFAULT_SYSTEM_PERSONA_LINES: &[&str] = &[
     "",
     "Operating principles:",
     "- Think, then act. Emit a small batch of tool calls, observe the results, then decide the next step. One inference = one JSON array of tool calls.",
-    "- Prefer the cheapest tool that answers the question. Read before you write. Never guess a file's contents — read it.",
+    "- Inspect the connected folder before changing it. Never guess which files exist.",
     "- Batch only independent calls. Approval-gated tools and calls that depend on another call's result must use a length-1 array. A terminal verb may appear only once and only last.",
     "- Be decisive. Do not narrate what you are about to do in prose — call the tool. Do not ask for confirmation unless a tool is approval-gated.",
     "- When the task is complete, call `reply` with the final answer. Only call `finish` if the user explicitly asked to end the session.",
     "- Keep `reply` short and to the point. If the user asked for an exact value or marker, `reply.text` must be ONLY that bare value — no preamble, no restating the question, no extra commentary or markdown before or after.",
     "- Respect the loop guard. If you are told a call was denied as a loop, change your approach — do not repeat the same call.",
-    "- Rare tools are listed without argument schemas. Call `tool.view { name }` before using a rare tool whose exact arguments are not already loaded.",
     "- Skills are listed as summaries. Call `skill.view { name }` before applying a skill whose full instructions are not already under `### loaded-skills`.",
-    "- `skill.run_script.script` is only an exact bundled filename listed as `scripts=` for that skill; put its arguments in `args`. Never put a shell command or external CLI invocation in `script`. Skills without `scripts=` must use their declared tools, typically `os.shell.run { cmd, args }` for external CLIs.",
-];
-
-/// Windows-specific shell hint, appended to `### capabilities` when the
-/// platform is `win32`. Ported verbatim from `WINDOWS_PLATFORM_HINT`.
-const WINDOWS_PLATFORM_HINT_LINES: &[&str] = &[
-    "Windows environment: `os.shell.run` uses a `cmd.exe` subshell. Prefer native Windows commands — `findstr` (not grep), `where` (not which), `type` (not cat), `dir` (not `ls -la`), `copy`/`move`/`ren`, `del`/`rmdir` semantics. Reference environment variables as `%VAR%` and use backslash `\\` path separators (e.g. `C:\\Users\\me\\file.txt`). Chain commands with `&&`, `||`, and pipe with `|`.",
 ];
 
 /// The fixed iteration-1 tool catalog. Order is load-bearing — it mirrors the
 /// order of `DEFAULT_TOOL_DESCRIPTORS` (A then B) in `atomic-agent`, filtered
 /// to the iteration-1 set (pure_read + approval_gated + terminal). Keeping the
 /// order stable keeps the rendered `### tools` block byte-stable across runs.
-pub const ITERATION_ONE_TOOLS: &[ToolDescriptor] = &[
+#[allow(dead_code)]
+pub(crate) const UPSTREAM_TOOL_DESCRIPTORS: &[ToolDescriptor] = &[
     ToolDescriptor {
         name: "tool.view",
         summary: "Load the full descriptor and args schema for a rare tool into the variable prompt tail.",
@@ -191,6 +183,13 @@ pub const ITERATION_ONE_TOOLS: &[ToolDescriptor] = &[
         name: "os.fs.mkdir",
         summary: "Create an empty directory without adding placeholder files. Parent directories are created by default. Approval-gated.",
         args_schema: r#"{ path: string, recursive?: boolean }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "os.fs.move",
+        summary: "Move one file or directory without overwriting an existing destination. Approval-gated. Undo by swapping source and destination.",
+        args_schema: r#"{ source: string, destination: string }"#,
         tier: ToolTier::Frequent,
         examples: &[],
     },
@@ -404,6 +403,62 @@ pub const ITERATION_ONE_TOOLS: &[ToolDescriptor] = &[
     },
 ];
 
+/// YoreBot MVP catalog. Keep it limited to the scriptless Downloads organizer
+/// contract so the local model cannot select a network, shell, provider, MCP,
+/// clipboard, notification, or unrelated filesystem capability.
+pub const ITERATION_ONE_TOOLS: &[ToolDescriptor] = &[
+    ToolDescriptor {
+        name: "skill.view",
+        summary: "Load the enabled Downloads organizer instructions.",
+        args_schema: r#"{ name: "downloads-organizer" }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "os.fs.list",
+        summary: "List one connected directory without changing it.",
+        args_schema: r#"{ path?: string }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "os.fs.glob",
+        summary: "Find files under one connected directory without changing them.",
+        args_schema: r#"{ pattern: string, cwd?: string }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "os.fs.mkdir",
+        summary: "Create an accepted folder after one-action approval.",
+        args_schema: r#"{ path: string, recursive?: boolean }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "os.fs.move",
+        summary:
+            "Move one accepted item without overwriting; undo by swapping source and destination.",
+        args_schema: r#"{ source: string, destination: string }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "reply",
+        summary: "Reply to the user and end this turn.",
+        args_schema: r#"{ text: string }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+    ToolDescriptor {
+        name: "finish",
+        summary: "End the session with a short summary when the user asks to stop.",
+        args_schema: r#"{ summary: string }"#,
+        tier: ToolTier::Frequent,
+        examples: &[],
+    },
+];
+
 /// Render the persona (joined with `\n`).
 pub fn default_system_persona() -> String {
     DEFAULT_SYSTEM_PERSONA_LINES.join("\n")
@@ -429,42 +484,13 @@ fn format_tool_rare(descriptor: &ToolDescriptor) -> String {
     format!("- {} — {}", descriptor.name, descriptor.summary)
 }
 
-/// Render the `### capabilities` body. Ported from `formatCapabilities`.
+/// Render only the local capabilities actually exposed by the product catalog.
 fn format_capabilities(caps: &CapabilitiesSummary) -> String {
-    let mut lines = vec![
+    [
         format!("platform: {} ({})", caps.platform, caps.arch),
         format!("working directory: {}", caps.working_dir),
-        format!("browser channel: {}", caps.browser_channel),
-        format!(
-            "clipboard: {}",
-            if caps.has_clipboard {
-                "available"
-            } else {
-                "unavailable"
-            }
-        ),
-        format!(
-            "window control (wmctrl): {}",
-            if caps.has_wmctrl {
-                "available"
-            } else {
-                "unavailable"
-            }
-        ),
-        format!(
-            "desktop notifications: {}",
-            if caps.has_notifications {
-                "available"
-            } else {
-                "unavailable"
-            }
-        ),
-    ];
-    if caps.platform == "win32" {
-        lines.push(String::new());
-        lines.push(WINDOWS_PLATFORM_HINT_LINES.join("\n"));
-    }
-    lines.join("\n")
+    ]
+    .join("\n")
 }
 
 /// Build the stable prefix — persona + `### rules` + `### tools` +
@@ -791,17 +817,26 @@ mod tests {
     }
 
     #[test]
-    fn tools_block_renders_frequent_and_rare_partitions() {
+    fn tools_block_exposes_only_the_downloads_organizer_catalog() {
         let caps = test_caps("linux");
         let prefix = build_stable_prefix(ITERATION_ONE_TOOLS, &[], &caps, 8, None);
 
         assert!(prefix.contains("# common (full)"));
-        assert!(prefix.contains("# extras"));
-
-        // A frequent tool renders with its full args schema.
-        assert!(prefix.contains("- os.fs.read { path: string"));
-        // A rare tool renders as a one-line entry with an em-dash.
-        assert!(prefix.contains("- os.git.blame — "));
+        assert!(!prefix.contains("# extras"));
+        assert!(prefix.contains("- os.fs.list { path?: string }"));
+        assert!(prefix.contains("- os.fs.move { source: string, destination: string }"));
+        for forbidden in [
+            "os.web",
+            "os.http",
+            "os.shell",
+            "os.fs.write",
+            "os.fs.trash",
+            "os.clipboard",
+            "os.notify",
+            "mcp.",
+        ] {
+            assert!(!prefix.contains(forbidden), "leaked `{forbidden}`");
+        }
     }
 
     #[test]
@@ -813,13 +848,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_hint_gated_on_platform() {
+    fn hidden_platform_capabilities_are_never_advertised() {
         let mac = build_stable_prefix(ITERATION_ONE_TOOLS, &[], &test_caps("darwin"), 8, None);
-        assert!(!mac.contains("`cmd.exe` subshell"));
-
         let win = build_stable_prefix(ITERATION_ONE_TOOLS, &[], &test_caps("win32"), 8, None);
-        assert!(win.contains("`cmd.exe` subshell"));
-        assert!(win.contains("C:\\Users\\me\\file.txt"));
+        for prompt in [mac, win] {
+            assert!(!prompt.contains("browser channel"));
+            assert!(!prompt.contains("clipboard:"));
+            assert!(!prompt.contains("notifications:"));
+            assert!(!prompt.contains("os.shell.run"));
+        }
     }
 
     #[test]
@@ -900,12 +937,12 @@ mod tests {
     }
 
     #[test]
-    fn loaded_rare_tools_render_only_in_variable_tail() {
+    fn unavailable_tools_cannot_be_loaded_into_the_variable_tail() {
         let caps = test_caps("linux");
         let prefix = build_stable_prefix(ITERATION_ONE_TOOLS, &[], &caps, 8, None);
         let loaded = vec!["os.fs.hash".to_string()];
         let full = build_prompt(&prefix, &loaded, &[], "USER: hi", None);
-        assert!(full.contains("### loaded-tools\n- os.fs.hash { path: string, algorithm?:"));
+        assert!(!full.contains("os.fs.hash"));
         assert!(!prefix.contains("### loaded-tools"));
     }
 
@@ -913,32 +950,30 @@ mod tests {
     fn skills_catalog_is_stable_and_loaded_bodies_stay_in_the_tail() {
         let caps = test_caps("linux");
         let skills = vec![SkillDescriptor {
-            name: "test-skill".into(),
-            description: "Test instructions".into(),
+            name: "downloads-organizer".into(),
+            description: "Organize Downloads".into(),
             version: "1.2.3".into(),
-            requires_tools: vec!["os.fs.read".into()],
-            requires_scripts: vec!["inspect.sh".into()],
-            dangerous: true,
+            requires_tools: vec!["os.fs.list".into(), "os.fs.move".into()],
+            requires_scripts: vec![],
+            dangerous: false,
         }];
         let prefix = build_stable_prefix(ITERATION_ONE_TOOLS, &skills, &caps, 8, None);
         assert!(prefix.contains(
-            "- test-skill (v1.2.3): Test instructions [tools=os.fs.read; scripts=inspect.sh; dangerous]"
+            "- downloads-organizer (v1.2.3): Organize Downloads [tools=os.fs.list,os.fs.move]"
         ));
-        assert!(prefix.contains(
-            "`skill.run_script.script` is only an exact bundled filename listed as `scripts=`"
-        ));
+        assert!(!prefix.contains("skill.run_script"));
         assert!(!prefix.contains("\n### loaded-skills\n"));
 
         let loaded = vec![crate::core::agent::skills::loaded::LoadedSkillState {
-            name: "test-skill".into(),
+            name: "downloads-organizer".into(),
             version: "1.2.3".into(),
             body: "# Full instructions".into(),
             loaded_at: 1,
         }];
         let full = build_prompt(&prefix, &[], &loaded, "USER: hi", None);
-        assert!(
-            full.contains("### loaded-skills\n# skill: test-skill (v1.2.3)\n# Full instructions")
-        );
+        assert!(full.contains(
+            "### loaded-skills\n# skill: downloads-organizer (v1.2.3)\n# Full instructions"
+        ));
     }
 
     #[test]

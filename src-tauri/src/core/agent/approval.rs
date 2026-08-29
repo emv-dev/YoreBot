@@ -19,9 +19,7 @@ type EventSink = Arc<dyn Fn(AgentEvent) -> Result<(), String> + Send + Sync>;
 
 pub struct ApprovalGate {
     run_id: String,
-    auto_approve: bool,
     pending: PendingApprovals,
-    allowlist: Arc<Mutex<ApprovalAllowlist>>,
     emit: EventSink,
     cancellation: CancellationToken,
     timeout: Duration,
@@ -30,17 +28,15 @@ pub struct ApprovalGate {
 impl ApprovalGate {
     pub fn new(
         run_id: String,
-        auto_approve: bool,
+        _auto_approve: bool,
         pending: PendingApprovals,
-        allowlist: Arc<Mutex<ApprovalAllowlist>>,
+        _allowlist: Arc<Mutex<ApprovalAllowlist>>,
         emit: EventSink,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             run_id,
-            auto_approve,
             pending,
-            allowlist,
             emit,
             cancellation,
             timeout: DEFAULT_APPROVAL_TIMEOUT,
@@ -56,15 +52,11 @@ impl ApprovalGate {
 
 #[async_trait]
 impl ApprovalHook for ApprovalGate {
-    async fn is_allowed(&self, fingerprint: &str) -> bool {
-        self.allowlist.lock().await.contains(fingerprint)
+    async fn is_allowed(&self, _fingerprint: &str) -> bool {
+        false
     }
 
     async fn request(&self, request: ApprovalRequest) -> Result<ApprovalDecision, String> {
-        if self.auto_approve {
-            return Ok(ApprovalDecision::AllowOnce);
-        }
-
         let approval_id = Uuid::new_v4().to_string();
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(
@@ -126,21 +118,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_approve_skips_pending_request() {
+    async fn auto_approve_cannot_skip_pending_request() {
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        let gate = ApprovalGate::new(
+        let emitted = Arc::new(StdMutex::new(Vec::new()));
+        let emitted_for_sink = emitted.clone();
+        let gate = Arc::new(ApprovalGate::new(
             "run".into(),
             true,
             pending.clone(),
             allowlist(),
-            Arc::new(|_| panic!("auto approval must not emit")),
+            Arc::new(move |event| {
+                emitted_for_sink.lock().unwrap().push(event);
+                Ok(())
+            }),
+            CancellationToken::new(),
+        ));
+        let task = {
+            let gate = gate.clone();
+            tokio::spawn(async move { gate.request(request()).await })
+        };
+        tokio::task::yield_now().await;
+        let approval_id = match &emitted.lock().unwrap()[0] {
+            AgentEvent::ApprovalRequested { approval_id, .. } => approval_id.clone(),
+            event => panic!("unexpected event: {event:?}"),
+        };
+        pending
+            .lock()
+            .await
+            .remove(&approval_id)
+            .unwrap()
+            .sender
+            .send(ApprovalDecision::AllowOnce)
+            .unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), ApprovalDecision::AllowOnce);
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remembered_approval_cannot_skip_pending_request() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let data_folder = tempfile::TempDir::new().unwrap();
+        let mut remembered = ApprovalAllowlist::default();
+        remembered.load_for_data_folder(data_folder.path()).unwrap();
+        remembered.insert("a".repeat(64)).unwrap();
+        let allowlist = Arc::new(Mutex::new(remembered));
+        let gate = ApprovalGate::new(
+            "run".into(),
+            false,
+            pending,
+            allowlist,
+            Arc::new(|_| Ok(())),
             CancellationToken::new(),
         );
-        assert_eq!(
-            gate.request(request()).await.unwrap(),
-            ApprovalDecision::AllowOnce
-        );
-        assert!(pending.lock().await.is_empty());
+
+        assert!(!gate.is_allowed(&"a".repeat(64)).await);
     }
 
     #[tokio::test]

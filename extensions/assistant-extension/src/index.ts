@@ -74,8 +74,8 @@ export default class JanAssistantExtension extends AssistantExtension {
     }
 
     if (currentVersion < 2) {
-      console.log('Running migration v2: Update to Atomic Chat instructions')
-      await this.migrateToAtomicChatInstructions()
+      console.log('Running migration v2: Update to YoreBot instructions')
+      await this.migrateToYoreBotInstructions()
       await this.saveMigrationVersion(2)
     }
 
@@ -89,7 +89,7 @@ export default class JanAssistantExtension extends AssistantExtension {
    */
   private async migrateAssistantInstructions(): Promise<void> {
     const OLD_INSTRUCTION = 'You are a helpful AI assistant.'
-    const NEW_INSTRUCTION = 'You are Atomic Chat, a helpful AI assistant.'
+    const NEW_INSTRUCTION = 'You are YoreBot, a helpful local AI assistant.'
 
     if (!(await fs.existsSync('file://assistants'))) {
       return
@@ -127,30 +127,12 @@ export default class JanAssistantExtension extends AssistantExtension {
   }
 
   /**
-   * Migration v2: Update assistant instructions to Atomic Chat format and set default parameters
+   * Migration v2: Update legacy assistant instructions to YoreBot defaults.
    */
-  private async migrateToAtomicChatInstructions(): Promise<void> {
+  private async migrateToYoreBotInstructions(): Promise<void> {
     const OLD_INSTRUCTION_PREFIX = 'You are Jan, a helpful AI assistant.'
-    const NEW_INSTRUCTION = `You are Atomic Chat, a helpful AI assistant who assists users with their requests. Atomic Chat is trained by Atomic Chat (https://atomic.chat).
-
-You must output your response in the exact language used in the latest user message. Do not provide translations or switch languages unless explicitly instructed to do so. If the input is mostly English, respond in English.
-
-When handling user queries:
-
-1. Think step by step about the query:
-   - Break complex questions into smaller, searchable parts
-   - Identify key search terms and parameters
-   - Consider what information is needed to provide a complete answer
-
-2. Mandatory logical analysis:
-   - Before engaging any tools, articulate your complete thought process in natural language. You must act as a "professional tool caller," demonstrating rigorous logic.
-   - Analyze the information gap: explicitly state what data is missing.
-   - Derive the strategy: explain why a specific tool is the logical next step.
-   - Justify parameters: explain why you chose those specific search keywords or that specific URL.
-
-You have tools to search for and access real-time, up-to-date data. Use them. Search before stating that you can't or don't know.
-
-Current date: {{current_date}}`
+    const NEW_INSTRUCTION =
+      "You are YoreBot, a helpful local AI assistant. Respond in the language of the user's latest message. Be concise, honest, and ask when important information is missing."
 
     const DEFAULT_PARAMETERS = {
       temperature: 0.7,
@@ -189,7 +171,7 @@ Current date: {{current_date}}`
             JSON.stringify(assistantWithParams, null, 2)
           )
           console.log(
-            `Migrated to Menlo instructions for assistant: ${assistant.id}`
+            `Migrated to YoreBot instructions for assistant: ${assistant.id}`
           )
         } catch (error) {
           console.error(`Failed to migrate assistant ${assistant.id}:`, error)
@@ -251,54 +233,17 @@ Current date: {{current_date}}`
   }
 
   private defaultAssistant: Assistant = {
-    avatar: '👋',
+    avatar: 'Y',
     thread_location: undefined,
     id: 'jan',
     object: 'assistant',
     created_at: Date.now() / 1000,
-    name: 'Atomic Chat',
-    description:
-      'Atomic Chat is a helpful desktop assistant that can reason through complex tasks and use tools to complete them on the user’s behalf.',
+    name: 'YoreBot',
+    description: 'Your private local assistant for chat and approved tasks.',
     model: '*',
-    instructions: `You are Atomic Chat, a helpful AI assistant who assists users with their requests. Atomic Chat is trained by Atomic Chat (https://atomic.chat).
-
-You must output your response in the exact language used in the latest user message. Do not provide translations or switch languages unless explicitly instructed to do so. If the input is mostly English, respond in English.
-
-When handling user queries:
-
-1. Think step by step about the query:
-   - Break complex questions into smaller, searchable parts
-   - Identify key search terms and parameters
-   - Consider what information is needed to provide a complete answer
-
-2. Mandatory logical analysis:
-   - Before engaging any tools, articulate your complete thought process in natural language. You must act as a "professional tool caller," demonstrating rigorous logic.
-   - Analyze the information gap: explicitly state what data is missing.
-   - Derive the strategy: explain why a specific tool is the logical next step.
-   - Justify parameters: explain why you chose those specific search keywords or that specific URL.
-
-You have tools to search for and access real-time, up-to-date data. Use them. Search before stating that you can't or don't know.
-
-Current date: {{current_date}}`,
-    tools: [
-      {
-        type: 'retrieval',
-        enabled: false,
-        useTimeWeightedRetriever: false,
-        settings: {
-          top_k: 2,
-          chunk_size: 1024,
-          chunk_overlap: 64,
-          retrieval_template: `Use the following pieces of context to answer the question at the end.
-----------------
-CONTEXT: {CONTEXT}
-----------------
-QUESTION: {QUESTION}
-----------------
-Helpful Answer:`,
-        },
-      },
-    ],
+    instructions:
+      "You are YoreBot, a helpful local AI assistant. Respond in the language of the user's latest message. Be concise, honest, and ask when important information is missing.",
+    tools: [],
     file_ids: [],
     metadata: undefined,
   }

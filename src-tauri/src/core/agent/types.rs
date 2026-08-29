@@ -170,7 +170,7 @@ pub enum ApprovalDecision {
 
 impl ApprovalDecision {
     pub fn is_approved(self) -> bool {
-        matches!(self, Self::AllowOnce | Self::AlwaysAllow)
+        matches!(self, Self::AllowOnce)
     }
 }
 
@@ -230,6 +230,14 @@ pub enum AgentEvent {
         step_index: u32,
         text: String,
     },
+    AgentUsage {
+        step_index: u32,
+        prompt_tokens: u64,
+        predicted_tokens: u64,
+        step_tokens: u64,
+        day_tokens: u64,
+        daily_limit: Option<u64>,
+    },
     AssistantDelta {
         text: String,
     },
@@ -282,7 +290,7 @@ pub enum AgentEvent {
         category: String,
     },
     TurnFinished {
-        /// `"reply"` | `"finish"` | `"max_steps"` | `"cancelled"` | `"failed"`.
+        /// `"reply"` | `"finish"` | `"max_steps"` | `"quota"` | `"cancelled"` | `"failed"`.
         reason: String,
         step_count: u32,
     },

@@ -58,7 +58,7 @@
     "choose": "Choose workspace",
     "change": "Change agent workspace",
     "default": "Default",
-    "defaultDescription": "Uses the agent-workspace folder inside the Atomic Chat data folder.",
+    "defaultDescription": "Uses a private YoreBot workspace on this computer.",
     "projectFiles": "Project Files",
     "external": "External",
     "canEdit": "CAN EDIT",
@@ -82,18 +82,10 @@
     "saveFailed": "The agent reply could not be saved."
   },
   "agentTasks": {
-    "title": "Ideas for you",
-    "findLatestNews": {
-      "title": "Find the latest news",
-      "prompt": "Find the latest news and summarize the most important recent developments with links to the sources."
-    },
-    "inspectFolder": {
-      "title": "Organize my Desktop",
-      "prompt": "Sort through my Desktop files and folders. Do not delete, overwrite, replace, rename, or modify any files or folders."
-    },
-    "findLargeFiles": {
-      "title": "Find large files",
-      "prompt": "Find the largest files in my Downloads folder and suggest safe cleanup candidates. Do not delete anything."
+    "title": "Try a task",
+    "organizeDownloads": {
+      "title": "Organize my Downloads",
+      "prompt": "Organize my Downloads folder. First show me exactly what you propose. Move files only after I accept the plan and approve each move. Never delete or overwrite anything."
     }
   },
   "threadType": {

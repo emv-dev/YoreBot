@@ -121,6 +121,29 @@ pub async fn prepare_call_paths(
         "os.fs.edit" => {
             resolve_field(args, "path", &[], None, "edit", &root, &mut resources).await?;
         }
+        "os.fs.move" => {
+            resolve_field(
+                args,
+                "source",
+                &[],
+                None,
+                "move-from",
+                &root,
+                &mut resources,
+            )
+            .await?;
+            resolve_field(
+                args,
+                "destination",
+                &[],
+                None,
+                "move-to",
+                &root,
+                &mut resources,
+            )
+            .await?;
+            validate_prepared_move(args).await?;
+        }
         "os.fs.trash" => {
             normalize_trash_paths(args)?;
             resolve_array_field(args, "paths", "trash", &root, &mut resources).await?;
@@ -349,6 +372,10 @@ fn validate_destructive_args(tool: &str, args: &Map<String, Value>) -> Result<()
                 return Err("`replaceAll` must be a boolean".into());
             }
         }
+        "os.fs.move" => {
+            string_arg(args, "source", &[])?;
+            string_arg(args, "destination", &[])?;
+        }
         "os.fs.trash" => {
             if !args.contains_key("paths") {
                 string_arg(args, "path", &[])?;
@@ -373,6 +400,25 @@ fn validate_destructive_args(tool: &str, args: &Map<String, Value>) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+async fn validate_prepared_move(args: &Map<String, Value>) -> Result<(), String> {
+    let source = PathBuf::from(string_arg(args, "source", &[])?);
+    let destination = PathBuf::from(string_arg(args, "destination", &[])?);
+    if source == destination {
+        return Err("Move source and destination must differ".into());
+    }
+    tokio::fs::symlink_metadata(&source)
+        .await
+        .map_err(|error| format!("{}: {error}", source.display()))?;
+    match tokio::fs::symlink_metadata(&destination).await {
+        Ok(_) => Err(format!(
+            "Move destination already exists: {}",
+            destination.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("{}: {error}", destination.display())),
+    }
 }
 
 fn normalize_trash_paths(args: &mut Map<String, Value>) -> Result<(), String> {

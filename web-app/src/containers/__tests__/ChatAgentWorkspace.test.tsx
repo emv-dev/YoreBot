@@ -12,13 +12,10 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({
     t: (key: string) => {
       const translations: Record<string, string> = {
-        'chat:agentTasks.title': 'Ideas for you',
-        'chat:agentTasks.findLatestNews.title': 'Find the latest news',
-        'chat:agentTasks.findLatestNews.prompt': 'Latest news prompt',
-        'chat:agentTasks.inspectFolder.title': 'Inspect this folder',
-        'chat:agentTasks.inspectFolder.prompt': 'Inspect prompt',
-        'chat:agentTasks.findLargeFiles.title': 'Find large files',
-        'chat:agentTasks.findLargeFiles.prompt': 'Large files prompt',
+        'chat:agentTasks.title': 'Try a task',
+        'chat:agentTasks.organizeDownloads.title': 'Organize my Downloads',
+        'chat:agentTasks.organizeDownloads.prompt':
+          'Organize Downloads prompt',
       }
       return translations[key] ?? key
     },
@@ -105,17 +102,20 @@ describe('Chat and Agent workspace controls', () => {
     )
 
     expect(
-      screen.queryByRole('heading', { name: 'Ideas for you' })
+      screen.queryByRole('heading', { name: 'Try a task' })
     ).not.toBeInTheDocument()
 
     rerender(<AgentTaskSuggestions visible onSelect={onSelect} />)
     await user.click(
-      screen.getByRole('button', { name: /Find the latest news/ })
+      screen.getByRole('button', { name: /Organize my Downloads/ })
     )
 
-    expect(onSelect).toHaveBeenCalledWith('Latest news prompt')
+    expect(onSelect).toHaveBeenCalledWith(
+      'Organize Downloads prompt',
+      'downloads-organizer'
+    )
     expect(onSelect).toHaveBeenCalledTimes(1)
-    expect(screen.getAllByRole('button')).toHaveLength(3)
+    expect(screen.getAllByRole('button')).toHaveLength(1)
   })
 
   it('switches between manual and skipped approvals', async () => {

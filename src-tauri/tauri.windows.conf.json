@@ -3,7 +3,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Atomic Chat",
+        "title": "YoreBot",
         "width": 1200,
         "minWidth": 1024,
         "height": 800,
@@ -26,11 +26,11 @@
   },
   "bundle": {
     "targets": ["nsis", "msi"],
-    "resources": ["resources/pre-install/**/*", "resources/LICENSE", "resources/agent-skills/**/*", "resources/bin/jan-cli.exe", "resources/llamacpp-backend-upstream/**/*", "resources/llamacpp-backend/**/*"],
+    "resources": ["resources/pre-install/**/*", "resources/LICENSE", "resources/agent-skills/downloads-organizer/**/*", "resources/bin/jan-cli.exe", "resources/llamacpp-backend-upstream/**/*"],
     "externalBin": ["resources/bin/bun", "resources/bin/uv"],
     "windows": {
       "wix": {
-        "upgradeCode": "b75dd42f-800c-57cb-8c5c-ed7fcbef13a0"
+        "upgradeCode": "f9861bdd-4a50-467e-ad25-c14c81803a3a"
       },
       "nsis": {
         "installerHooks": "./windows/hooks.nsh"

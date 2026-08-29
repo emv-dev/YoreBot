@@ -1,17 +1,8 @@
 export const AGENT_TASK_SUGGESTIONS = [
   {
-    id: 'findLatestNews',
-    titleKey: 'chat:agentTasks.findLatestNews.title',
-    promptKey: 'chat:agentTasks.findLatestNews.prompt',
-  },
-  {
-    id: 'inspectFolder',
-    titleKey: 'chat:agentTasks.inspectFolder.title',
-    promptKey: 'chat:agentTasks.inspectFolder.prompt',
-  },
-  {
-    id: 'findLargeFiles',
-    titleKey: 'chat:agentTasks.findLargeFiles.title',
-    promptKey: 'chat:agentTasks.findLargeFiles.prompt',
+    id: 'organizeDownloads',
+    titleKey: 'chat:agentTasks.organizeDownloads.title',
+    promptKey: 'chat:agentTasks.organizeDownloads.prompt',
+    skillName: 'downloads-organizer',
   },
 ] as const

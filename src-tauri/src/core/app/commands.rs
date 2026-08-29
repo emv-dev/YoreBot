@@ -9,7 +9,7 @@ use crate::core::state::AppState;
 /// Resolve the Jan config file path without an AppHandle (for CLI use).
 /// Mirrors the logic in get_configuration_file_path() using the dirs crate.
 pub fn resolve_config_file_path() -> PathBuf {
-    let package_name = env!("CARGO_PKG_NAME");
+    let package_name = "app.yorebot.desktop";
 
     // On Linux, prefer the XDG config dir first (matches Tauri behaviour)
     #[cfg(target_os = "linux")]
@@ -20,7 +20,7 @@ pub fn resolve_config_file_path() -> PathBuf {
         }
     }
 
-    // Primary path: data_dir/Jan  (e.g. ~/Library/Application Support/Jan on macOS)
+    // Primary path: the YoreBot application-data directory.
     if let Some(data_dir) = dirs::data_dir() {
         let path = data_dir.join(package_name);
         if !path.exists() {
@@ -50,7 +50,7 @@ pub fn resolve_jan_data_folder() -> PathBuf {
     }
 
     // Default: data_dir/Jan/data  (mirrors default_data_folder_path)
-    let app_name = std::env::var("APP_NAME").unwrap_or_else(|_| "Atomic Chat".to_string());
+    let app_name = std::env::var("APP_NAME").unwrap_or_else(|_| "YoreBot".to_string());
     if let Some(data_dir) = dirs::data_dir() {
         return data_dir.join(&app_name).join("data");
     }
@@ -181,31 +181,7 @@ pub fn get_configuration_file_path<R: Runtime>(app_handle: tauri::AppHandle<R>) 
         PathBuf::from(home_dir)
     });
 
-    let package_name = env!("CARGO_PKG_NAME");
-    #[cfg(target_os = "linux")]
-    let old_data_dir = {
-        if let Some(config_path) = dirs::config_dir() {
-            config_path.join(package_name)
-        } else {
-            log::debug!("Could not determine config directory");
-            app_path
-                .parent()
-                .unwrap_or(&app_path.join("../"))
-                .join(package_name)
-        }
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    let old_data_dir = app_path
-        .parent()
-        .unwrap_or(&app_path.join("../"))
-        .join(package_name);
-
-    if old_data_dir.exists() {
-        old_data_dir.join(CONFIGURATION_FILE_NAME)
-    } else {
-        app_path.join(CONFIGURATION_FILE_NAME)
-    }
+    app_path.join(CONFIGURATION_FILE_NAME)
 }
 
 #[tauri::command]

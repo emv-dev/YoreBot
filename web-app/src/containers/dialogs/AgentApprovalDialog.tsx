@@ -17,19 +17,31 @@ import {
 } from '@/services/agent/tauri'
 import type { AgentApprovalResolution } from '@/types/agent'
 
-const PREVIEW_LIMIT = 4_000
-const RESOURCE_VALUE_LIMIT = 512
-
-function boundedJson(value: unknown): string {
+function previewJson(value: unknown): string {
   let serialized: string
   try {
     serialized = JSON.stringify(value, null, 2)
   } catch {
     serialized = String(value)
   }
-  return serialized.length > PREVIEW_LIMIT
-    ? `${serialized.slice(0, PREVIEW_LIMIT)}\n…`
-    : serialized
+  return serialized
+}
+
+function formatApprovalPreview(tool: string, value: unknown): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const fields = value as Record<string, unknown>
+    if (tool === 'os.fs.mkdir' && typeof fields.path === 'string') {
+      return `Create folder: ${fields.path}`
+    }
+    if (
+      tool === 'os.fs.move' &&
+      typeof fields.source === 'string' &&
+      typeof fields.destination === 'string'
+    ) {
+      return `Move: ${fields.source} → ${fields.destination}`
+    }
+  }
+  return previewJson(value)
 }
 
 export default function AgentApprovalDialog() {
@@ -45,7 +57,10 @@ export default function AgentApprovalDialog() {
   )
   const approval = run?.pendingApproval
   const preview = useMemo(
-    () => (approval ? boundedJson(approval.preview) : ''),
+    () =>
+      approval
+        ? formatApprovalPreview(approval.tool, approval.preview)
+        : '',
     [approval]
   )
 
@@ -131,8 +146,7 @@ export default function AgentApprovalDialog() {
                     <span className="font-medium">{resource.operation}</span>{' '}
                     <span className="text-muted-foreground">
                       {resource.kind}:{' '}
-                      {resource.value.slice(0, RESOURCE_VALUE_LIMIT)}
-                      {resource.value.length > RESOURCE_VALUE_LIMIT ? '…' : ''}
+                      {resource.value}
                     </span>
                   </div>
                 ))}
@@ -154,16 +168,6 @@ export default function AgentApprovalDialog() {
           >
             {t('agentApproval.deny')}
           </Button>
-          {approval.can_remember && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={run.approvalResolving}
-              onClick={() => void resolve('always_allow')}
-            >
-              {t('agentApproval.alwaysAllow')}
-            </Button>
-          )}
           <Button
             size="sm"
             disabled={run.approvalResolving}

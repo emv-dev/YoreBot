@@ -1,0 +1,123 @@
+name: YoreBot Windows internal build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yorebot-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-internal-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable Yarn
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.3 --activate
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          yarn install --immutable
+          Push-Location extensions
+          yarn install --immutable
+          Pop-Location
+
+      - name: Install pinned icon build dependency
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --no-cache-dir Pillow==12.3.0
+
+      - name: Verify pinned CPU runtime archive
+        shell: pwsh
+        run: |
+          $url = "https://github.com/ggml-org/llama.cpp/releases/download/b10431/llama-b10431-bin-win-cpu-x64.zip"
+          $archive = Join-Path $env:RUNNER_TEMP "llama-b10431-bin-win-cpu-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          if ((Get-Item $archive).Length -ne 18853706) { throw "Pinned runtime size mismatch" }
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($hash -ne "631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf") {
+            throw "Pinned runtime SHA-256 mismatch"
+          }
+
+          $runtime = "src-tauri/resources/llamacpp-backend-upstream"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          Expand-Archive -Path $archive -DestinationPath $runtime -Force
+          $server = Join-Path $runtime "llama-server.exe"
+          if (Test-Path $server) {
+            $bin = Join-Path $runtime "build/bin"
+            New-Item -ItemType Directory -Force $bin | Out-Null
+            Get-ChildItem $runtime -File | Move-Item -Destination $bin
+          }
+          "b10431" | Set-Content (Join-Path $runtime "version.txt")
+          "win-cpu-x64" | Set-Content (Join-Path $runtime "backend.txt")
+          if (-not (Test-Path (Join-Path $runtime "build/bin/llama-server.exe"))) {
+            throw "Pinned runtime did not contain llama-server.exe"
+          }
+
+      - name: Build existing components
+        shell: pwsh
+        run: |
+          yarn build:tauri:plugin:api
+          yarn build:core
+          yarn build:extensions:win32
+          yarn download:bin
+          yarn copy:assets:tauri
+          yarn build:icon
+          cargo build --manifest-path src-tauri/Cargo.toml --features cli --bin jan-cli
+          Copy-Item src-tauri/target/debug/jan-cli.exe src-tauri/resources/bin/jan-cli.exe
+
+      - name: Test product seams
+        shell: pwsh
+        run: |
+          yarn workspace @janhq/web-app tsc -b --pretty false
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx
+          Push-Location extensions
+          yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
+          Pop-Location
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::entitlements:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::runner_tests:: -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::filesystem_move_is_non_overwriting_and_reversible -- --test-threads=1
+
+      - name: Build unsigned internal NSIS installer
+        shell: pwsh
+        run: yarn tauri build --debug --bundles nsis --ci
+
+      - name: Collect internal NSIS installer
+        shell: pwsh
+        run: |
+          $installers = @(
+            Get-ChildItem "src-tauri/target/debug/bundle/nsis" -Filter "*.exe" -File -Recurse
+          )
+          if ($installers.Count -eq 0) {
+            throw "Unsigned NSIS installer was not produced"
+          }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          foreach ($installer in $installers) {
+            Copy-Item $installer.FullName (Join-Path "artifacts" $installer.Name)
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YoreBot-Windows-unsigned-internal
+          path: artifacts/*.exe
+          if-no-files-found: error
+          retention-days: 7

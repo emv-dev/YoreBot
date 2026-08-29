@@ -40,14 +40,18 @@ pub fn resource_class_for(tool_name: &str) -> ResourceClass {
         | "os.web.fetch"
         | "os.clipboard.read" => ResourceClass::PureRead,
         "vision.describe" => ResourceClass::Vision,
-        "os.clipboard.write" | "os.notify" => ResourceClass::MemoryWrite,
-        "os.fs.write" | "os.fs.mkdir" | "os.fs.edit" => ResourceClass::FsWrite,
-        "os.fs.trash"
+        "os.fs.write"
+        | "os.fs.mkdir"
+        | "os.fs.edit"
+        | "os.fs.move"
+        | "os.fs.trash"
         | "os.fs.patch"
         | "os.fs.archive.extract"
         | "os.shell.run"
         | "os.proc.kill"
         | "os.http.request"
+        | "os.clipboard.write"
+        | "os.notify"
         | "skill.run_script" => ResourceClass::ApprovalGated,
         "reply" | "finish" => ResourceClass::Terminal,
         _ => ResourceClass::Unknown,
@@ -102,5 +106,30 @@ mod tests {
     #[test]
     fn classifies_vision_as_a_serial_group() {
         assert_eq!(resource_class_for("vision.describe"), ResourceClass::Vision);
+    }
+
+    #[test]
+    fn every_mutation_and_shell_call_is_approval_gated() {
+        for tool in [
+            "os.fs.write",
+            "os.fs.mkdir",
+            "os.fs.edit",
+            "os.fs.move",
+            "os.fs.trash",
+            "os.fs.patch",
+            "os.fs.archive.extract",
+            "os.shell.run",
+            "os.proc.kill",
+            "os.http.request",
+            "os.clipboard.write",
+            "os.notify",
+            "skill.run_script",
+        ] {
+            assert_eq!(
+                resource_class_for(tool),
+                ResourceClass::ApprovalGated,
+                "{tool} can mutate state without an approval gate"
+            );
+        }
     }
 }

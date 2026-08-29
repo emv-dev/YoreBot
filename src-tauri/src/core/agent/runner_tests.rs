@@ -1,8 +1,13 @@
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 
+use async_trait::async_trait;
 use hyper::StatusCode;
 use tokio_util::sync::CancellationToken;
 
+use super::entitlements::{
+    AgentAccess, AgentAccessTier, AgentQuotaHook, AgentTokenUsage, AgentUsageReceipt,
+    FREE_AGENT_TOKENS_PER_DAY,
+};
 use super::path_policy::EditableRoots;
 use super::runner::{run_turn, RunTurnInput};
 use super::session::AgentSessionState;
@@ -17,6 +22,40 @@ struct TestRun {
     events: Vec<AgentEvent>,
     requests: Vec<serde_json::Value>,
     session: AgentSessionState,
+}
+
+#[derive(Default)]
+struct OneStepQuota {
+    checks: Mutex<u32>,
+    recorded: Mutex<Vec<AgentTokenUsage>>,
+}
+
+#[async_trait]
+impl AgentQuotaHook for OneStepQuota {
+    async fn check(&self) -> Result<AgentAccess, String> {
+        let mut checks = self.checks.lock().expect("quota checks");
+        let allowed = *checks == 0;
+        *checks += 1;
+        Ok(AgentAccess {
+            allowed,
+            tier: AgentAccessTier::Free,
+            day_tokens: if allowed {
+                0
+            } else {
+                FREE_AGENT_TOKENS_PER_DAY
+            },
+            daily_limit: Some(FREE_AGENT_TOKENS_PER_DAY),
+        })
+    }
+
+    async fn record(&self, usage: AgentTokenUsage) -> Result<AgentUsageReceipt, String> {
+        self.recorded.lock().expect("recorded usage").push(usage);
+        Ok(AgentUsageReceipt {
+            step_tokens: usage.total(),
+            day_tokens: usage.total(),
+            daily_limit: Some(FREE_AGENT_TOKENS_PER_DAY),
+        })
+    }
 }
 
 async fn run_script(
@@ -55,6 +94,8 @@ async fn run_script(
             session: &mut session,
             skill_registry: &skill_registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     )
@@ -71,6 +112,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::TurnStarted { .. } => "turn_started",
         AgentEvent::StepStarted { .. } => "step_started",
+        AgentEvent::AgentUsage { .. } => "agent_usage",
         AgentEvent::ReasoningDelta { .. } => "reasoning_delta",
         AgentEvent::AssistantDelta { .. } => "assistant_delta",
         AgentEvent::ToolCallParsed { .. } => "tool_call_parsed",
@@ -103,6 +145,73 @@ fn executed(events: &[AgentEvent]) -> Vec<(&str, ToolStatus)> {
             _ => None,
         })
         .collect()
+}
+
+#[tokio::test]
+async fn agent_records_completion_tokens_then_gates_the_next_step() {
+    let workspace = TestWorkspace::new();
+    let server = ScriptedCompletionServer::start(vec![ScriptedResponse::completion(
+        r#"[{"tool":"os.fs.list","args":{"path":"."}}]"#,
+    )])
+    .await;
+    let client = server.client();
+    let desktop = RecordingDesktop::default();
+    let approval = RecordingApproval::deny();
+    let folder_access = RecordingFolderAccess::deny();
+    let cancellation = CancellationToken::new();
+    let quota = OneStepQuota::default();
+    let mut session = AgentSessionState::new("test-session");
+    let registry = workspace.skill_registry();
+    let editable_roots = EditableRoots::new(workspace.path(), &[]).await.unwrap();
+    let mut events = Vec::new();
+
+    let result = run_turn(
+        RunTurnInput {
+            run_id: "test-run",
+            session_id: "test-session",
+            user_message: "list downloads",
+            selected_skill: None,
+            stable_prefix: "TEST_STABLE_PREFIX",
+            model_profile: super::model_profile::AgentModelProfile::Plain,
+            working_dir: workspace.path(),
+            editable_roots: &editable_roots,
+            external_read_only_roots: &[],
+            trusted_read_roots: &[],
+            max_steps: 3,
+            client: &client,
+            approval: &approval,
+            folder_access: &folder_access,
+            desktop: &desktop,
+            cancellation: &cancellation,
+            session: &mut session,
+            skill_registry: &registry,
+            bundled_script_runtime: None,
+            quota: Some(&quota),
+            restrict_to_yorebot_catalog: true,
+        },
+        |event| collect_event(&mut events, event),
+    )
+    .await;
+
+    assert!(result.is_ok());
+    assert_eq!(server.requests().len(), 1);
+    assert_eq!(
+        *quota.recorded.lock().expect("recorded usage"),
+        [AgentTokenUsage {
+            prompt_tokens: 1,
+            predicted_tokens: 1,
+        }]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::AgentUsage {
+            prompt_tokens: 1,
+            predicted_tokens: 1,
+            step_tokens: 2,
+            ..
+        }
+    )));
+    assert_eq!(finished_reason(&events), Some(("quota", 1)));
 }
 
 #[tokio::test]
@@ -187,6 +296,8 @@ async fn gemma4_turn_uses_native_framing_and_parses_channel_reasoning() {
             session: &mut session,
             skill_registry: &skill_registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     )
@@ -316,6 +427,8 @@ async fn sequential_runs_share_the_session_transcript() {
                 session: &mut session,
                 skill_registry: &skill_registry,
                 bundled_script_runtime: None,
+                quota: None,
+                restrict_to_yorebot_catalog: false,
             },
             |_| Ok(()),
         )
@@ -374,7 +487,7 @@ async fn pure_reads_complete_before_the_tail_terminal() {
 }
 
 #[tokio::test]
-async fn safe_write_changes_the_workspace_without_approval() {
+async fn filesystem_write_changes_the_workspace_after_one_action_approval() {
     let workspace = TestWorkspace::new();
     let approval = RecordingApproval::allow();
     let run = run_script(
@@ -393,12 +506,14 @@ async fn safe_write_changes_the_workspace_without_approval() {
 
     assert!(run.result.is_ok());
     assert_eq!(workspace.read("written.txt"), b"EXACT_BYTES");
-    assert!(approval.requests().is_empty());
+    assert_eq!(approval.requests().len(), 1);
+    assert!(!approval.requests()[0].can_remember);
+    assert_eq!(approval.requests()[0].preview["content"], "EXACT_BYTES");
     assert_eq!(executed(&run.events)[0].1, ToolStatus::Ok);
 }
 
 #[tokio::test]
-async fn safe_write_is_not_blocked_by_a_denied_approval_policy() {
+async fn denied_filesystem_write_has_no_side_effect() {
     let workspace = TestWorkspace::new();
     let approval = RecordingApproval::deny();
     let run = run_script(
@@ -416,9 +531,10 @@ async fn safe_write_is_not_blocked_by_a_denied_approval_policy() {
     .await;
 
     assert!(run.result.is_ok());
-    assert_eq!(workspace.read("denied.txt"), b"forbidden");
-    assert!(approval.requests().is_empty());
-    assert_eq!(executed(&run.events)[0].1, ToolStatus::Ok);
+    assert!(!workspace.path().join("denied.txt").exists());
+    assert_eq!(approval.requests().len(), 1);
+    assert!(!approval.requests()[0].can_remember);
+    assert_eq!(executed(&run.events)[0].1, ToolStatus::Denied);
 }
 
 #[tokio::test]
@@ -530,7 +646,7 @@ async fn repeated_repair_failure_finishes_as_grammar_failure() {
 }
 
 #[tokio::test]
-async fn safe_filesystem_writes_share_a_serial_batch_without_trimming() {
+async fn filesystem_mutations_are_approved_and_executed_one_action_at_a_time() {
     let workspace = TestWorkspace::new();
     let run = run_script(
         &workspace,
@@ -541,11 +657,14 @@ async fn safe_filesystem_writes_share_a_serial_batch_without_trimming() {
                     {"tool":"os.fs.edit","args":{"path":"kept.txt","oldString":"KEPT","newString":"DROPPED"}}
                 ]"#,
             ),
+            ScriptedResponse::completion(
+                r#"[{"tool":"os.fs.edit","args":{"path":"kept.txt","oldString":"KEPT","newString":"DROPPED"}}]"#,
+            ),
             ScriptedResponse::completion(r#"[{"tool":"reply","args":{"text":"done"}}]"#),
         ],
         &RecordingApproval::allow(),
         &CancellationToken::new(),
-        3,
+        4,
     )
     .await;
 
@@ -563,15 +682,15 @@ async fn safe_filesystem_writes_share_a_serial_batch_without_trimming() {
         .events
         .iter()
         .any(|event| matches!(event, AgentEvent::ParseRetry { .. })));
-    assert!(!run
+    assert!(run
         .events
         .iter()
         .any(|event| matches!(event, AgentEvent::BatchTrimmed { .. })));
-    assert_eq!(run.requests.len(), 2);
+    assert_eq!(run.requests.len(), 3);
 }
 
 #[tokio::test]
-async fn mixed_read_and_safe_write_batch_executes_both_calls() {
+async fn mixed_read_and_mutation_batch_keeps_only_the_approval_gated_action() {
     let workspace = TestWorkspace::new();
     workspace.write("edit.txt", "OLD");
     let run = run_script(
@@ -595,16 +714,16 @@ async fn mixed_read_and_safe_write_batch_executes_both_calls() {
     assert_eq!(workspace.read("edit.txt"), b"NEW");
     assert_eq!(
         executed(&run.events),
-        [
-            ("os.fs.read", ToolStatus::Ok),
-            ("os.fs.edit", ToolStatus::Ok),
-            ("reply", ToolStatus::Ok)
-        ]
+        [("os.fs.edit", ToolStatus::Ok), ("reply", ToolStatus::Ok)]
     );
     assert!(!run
         .events
         .iter()
         .any(|event| matches!(event, AgentEvent::ParseRetry { .. })));
+    assert!(run
+        .events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::BatchTrimmed { .. })));
 }
 
 #[tokio::test]
@@ -705,6 +824,8 @@ async fn cancellation_interrupts_an_in_flight_completion() {
             session: &mut session,
             skill_registry: &skill_registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     );
@@ -872,7 +993,7 @@ async fn permuted_batch_does_not_count_as_an_identical_composite() {
 }
 
 #[tokio::test]
-async fn tool_view_exposes_the_rare_schema_on_the_following_step() {
+async fn unavailable_rare_tools_stay_out_of_the_yorebot_prompt_tail() {
     let workspace = TestWorkspace::new();
     workspace.write("fixture.txt", "hash me");
     let run = run_script(
@@ -897,8 +1018,8 @@ async fn tool_view_exposes_the_rare_schema_on_the_following_step() {
         .contains("### loaded-tools"));
     for request in &run.requests[1..] {
         let prompt = request["prompt"].as_str().expect("later prompt");
-        assert!(prompt.contains("### loaded-tools"));
-        assert!(prompt.contains("- os.fs.hash { path: string, algorithm?:"));
+        assert!(!prompt.contains("### loaded-tools"));
+        assert!(!prompt.contains("- os.fs.hash { path: string, algorithm?:"));
     }
 }
 
@@ -964,6 +1085,8 @@ async fn skill_view_loads_the_body_and_restores_it_on_the_next_turn() {
             session: &mut restored_session,
             skill_registry: &registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     )
@@ -1021,6 +1144,8 @@ async fn selected_skill_is_loaded_into_the_first_prompt_without_skill_view() {
             session: &mut session,
             skill_registry: &registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     )
@@ -1079,6 +1204,8 @@ async fn unknown_selected_skill_fails_before_completion() {
             session: &mut session,
             skill_registry: &registry,
             bundled_script_runtime: None,
+            quota: None,
+            restrict_to_yorebot_catalog: false,
         },
         |event| collect_event(&mut events, event),
     )

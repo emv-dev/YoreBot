@@ -176,6 +176,8 @@ impl LiveHarness {
                     session: &mut session,
                     skill_registry: &skill_registry,
                     bundled_script_runtime: None,
+                    quota: None,
+                    restrict_to_yorebot_catalog: false,
                 },
                 |event| collect_event(&mut events, event),
             ),

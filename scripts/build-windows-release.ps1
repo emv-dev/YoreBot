@@ -1,7 +1,6 @@
 #Requires -Version 5.1
 # scripts/build-windows-release.ps1
-# Atomic Chat - Windows release builder (local, no code signing)
-# Mirrors CI pipeline from release.yml: CPU-only backend, NSIS + MSI installers.
+# YoreBot - Windows internal builder (local, no code signing or updater).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/build-windows-release.ps1
@@ -180,37 +179,9 @@ $backend = 'win-cpu-x64'
 if (Test-Path $llamacppDir) { Remove-Item $llamacppDir -Recurse -Force }
 New-Item -ItemType Directory -Path $llamacppDir -Force | Out-Null
 
-# ATO-199: resolve backend index from atomic-chat-conf static manifest.
-$manifestUrl = 'https://raw.githubusercontent.com/AtomicBot-ai/atomic-chat-conf/main/backends/manifest.json'
-$headers = @{ 'User-Agent' = 'atomic-chat-build' }
-
-Write-Host '  Fetching backend manifest...'
-$manifest = $null
-for ($i = 1; $i -le 5; $i++) {
-    try {
-        $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers $headers -UseBasicParsing
-        break
-    } catch {
-        Write-Host "  Manifest fetch attempt $i/5 failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        Start-Sleep -Seconds ($i * 2)
-    }
-}
-if (-not $manifest -or -not $manifest.tag_name -or -not $manifest.assets) {
-    Write-Host "[FATAL] Could not read backend manifest from $manifestUrl" -ForegroundColor Red
-    exit 1
-}
-$tag = ''
-$want = "llama-$($manifest.tag_name)-bin-$backend.zip"
-if ($manifest.assets | Where-Object { $_.name -eq $want }) {
-    $tag = $manifest.tag_name
-}
-if (-not $tag) {
-    Write-Host "[FATAL] Backend manifest does not list asset llama-<tag>-bin-$backend.zip. Update atomic-chat-conf/backends/manifest.json." -ForegroundColor Red
-    exit 1
-}
-
-# ggml-org publishes Windows binaries as .zip (not .tar.gz like the
-# legacy janhq mirror).
+$tag = 'b10431'
+$expectedSize = 18853706
+$expectedSha256 = '631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf'
 $archiveUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/llama-$tag-bin-$backend.zip"
 $archivePath = Join-Path $env:TEMP 'llamacpp-upstream-backend.zip'
 
@@ -230,6 +201,16 @@ for ($i = 1; $i -le 5; $i++) {
 }
 if (-not $downloaded) {
     Write-Host "[FATAL] Failed to download $archiveUrl after 5 attempts" -ForegroundColor Red
+    exit 1
+}
+
+if ((Get-Item $archivePath).Length -ne $expectedSize) {
+    Write-Host '[FATAL] Pinned backend size mismatch' -ForegroundColor Red
+    exit 1
+}
+$actualSha256 = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualSha256 -ne $expectedSha256) {
+    Write-Host '[FATAL] Pinned backend SHA-256 mismatch' -ForegroundColor Red
     exit 1
 }
 

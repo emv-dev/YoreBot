@@ -1,5 +1,5 @@
 {
-  "identifier": "jan.ai.app",
+  "identifier": "app.yorebot.android",
   "build": {
     "devUrl": null,
     "frontendDist": "../web-app/dist",
@@ -17,7 +17,7 @@
     "resources": [
       "resources/pre-install/**/*",
       "resources/LICENSE",
-      "resources/agent-skills/**/*"
+      "resources/agent-skills/downloads-organizer/**/*"
     ],
     "externalBin": [],
     "android": {

@@ -14,15 +14,25 @@ vi.mock('@/services/agent/tauri', () => ({
     String(error).includes('approval is not pending'),
 }))
 
-function openApproval(canRemember = true): void {
+function openApproval({
+  canRemember = true,
+  tool = 'os.fs.write',
+  reason = 'Write a file',
+  preview = { path: '/workspace/a.txt' },
+}: {
+  canRemember?: boolean
+  tool?: string
+  reason?: string
+  preview?: unknown
+} = {}): void {
   useAgentRun.getState().startRun('thread-1', 'run-1')
   useAgentRun.getState().applyEvent('thread-1', {
     type: 'approval_requested',
     run_id: 'run-1',
     approval_id: 'approval-1',
-    tool: 'os.fs.write',
-    reason: 'Write a file',
-    preview: { path: '/workspace/a.txt' },
+    tool,
+    reason,
+    preview,
     affected_resources: [
       { kind: 'path', value: '/workspace/a.txt', operation: 'write' },
     ],
@@ -38,7 +48,7 @@ describe('AgentApprovalDialog', () => {
     openApproval()
   })
 
-  it('renders approval controls without warning icon styling', () => {
+  it('offers only deny and approve once', () => {
     const { container } = render(<AgentApprovalDialog />)
 
     expect(container.querySelector('.text-amber-500')).toBeNull()
@@ -47,8 +57,8 @@ describe('AgentApprovalDialog', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /deny/i })).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: /alwaysAllow/i })
-    ).toBeInTheDocument()
+      screen.queryByRole('button', { name: /alwaysAllow/i })
+    ).not.toBeInTheDocument()
   })
 
   it('approves once and guards against a double click', async () => {
@@ -91,27 +101,63 @@ describe('AgentApprovalDialog', () => {
     )
   })
 
-  it('always allows a rememberable action', async () => {
-    const user = userEvent.setup()
-    render(<AgentApprovalDialog />)
-
-    await user.click(screen.getByRole('button', { name: /alwaysAllow/i }))
-
-    expect(resolveAgentApproval).toHaveBeenCalledWith({
-      approval_id: 'approval-1',
-      decision: 'always_allow',
-    })
-  })
-
-  it('hides always allow for an action that cannot be remembered', () => {
+  it('does not expose remembered approvals', () => {
     useAgentRun.getState().clearAll()
-    openApproval(false)
+    openApproval({ canRemember: false })
 
     render(<AgentApprovalDialog />)
 
     expect(
       screen.queryByRole('button', { name: /alwaysAllow/i })
     ).not.toBeInTheDocument()
+  })
+
+  it('shows an exact plain-language folder preview', () => {
+    const path = `/Downloads/${'receipts-'.repeat(40)}2026`
+    useAgentRun.getState().clearAll()
+    openApproval({
+      tool: 'os.fs.mkdir',
+      reason: 'Create a folder',
+      preview: { path },
+    })
+
+    render(<AgentApprovalDialog />)
+
+    expect(document.querySelector('pre')?.textContent).toBe(
+      `Create folder: ${path}`
+    )
+  })
+
+  it('shows exact plain-language source and destination paths for a move', () => {
+    const source = `/Downloads/${'quarterly-report-'.repeat(30)}final.pdf`
+    const destination = `/Downloads/Documents/${'quarterly-report-'.repeat(30)}final.pdf`
+    useAgentRun.getState().clearAll()
+    openApproval({
+      tool: 'os.fs.move',
+      reason: 'Move a file',
+      preview: { source, destination },
+    })
+
+    render(<AgentApprovalDialog />)
+
+    expect(document.querySelector('pre')?.textContent).toBe(
+      `Move: ${source} → ${destination}`
+    )
+  })
+
+  it('keeps structured JSON for other guarded tools', () => {
+    const preview = {
+      path: '/workspace/a.txt',
+      content: 'exact consequential content',
+    }
+    useAgentRun.getState().clearAll()
+    openApproval({ preview })
+
+    render(<AgentApprovalDialog />)
+
+    expect(document.querySelector('pre')?.textContent).toBe(
+      JSON.stringify(preview, null, 2)
+    )
   })
 
   it('treats a stale approval resolution as a benign race', async () => {

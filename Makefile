@@ -643,14 +643,10 @@ download-llamacpp-upstream-backend-win-cpu:
 		$$dir = 'src-tauri/resources/llamacpp-backend-upstream'; \
 		if (Test-Path $$dir) { Remove-Item $$dir -Recurse -Force }; \
 		New-Item -ItemType Directory -Path $$dir -Force | Out-Null; \
-		Write-Host 'Resolving backend index from atomic-chat-conf manifest (ATO-199)...'; \
-		$$headers = @{ 'User-Agent' = 'atomic-chat' }; \
 		$$backend = 'win-cpu-x64'; \
-		$$manifest = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/AtomicBot-ai/atomic-chat-conf/main/backends/manifest.json' -Headers $$headers; \
-		$$tag = ''; \
-		$$want = \"llama-$$($$manifest.tag_name)-bin-$${backend}.zip\"; \
-		if ($$manifest.assets | Where-Object { $$_.name -eq $$want }) { $$tag = $$manifest.tag_name }; \
-		if (-not $$tag) { throw 'atomic-chat-conf backend manifest does not list the win-cpu-x64 asset (update backends/manifest.json)' }; \
+		$$tag = 'b10431'; \
+		$$expectedSize = 18853706; \
+		$$expectedSha256 = '631c8f7b237ca901e2b7b07680791a27c4fc23104f1640409e6c0e7c55f57fcf'; \
 		$$url = \"https://github.com/ggml-org/llama.cpp/releases/download/$$tag/llama-$${tag}-bin-$${backend}.zip\"; \
 		[System.IO.File]::WriteAllText(\"$$dir/version.txt\", $$tag); \
 		[System.IO.File]::WriteAllText(\"$$dir/backend.txt\", $$backend); \
@@ -663,6 +659,9 @@ download-llamacpp-upstream-backend-win-cpu:
 			catch { Write-Host \"Download attempt $$i/5 failed: $$($$_.Exception.Message); retrying...\"; Start-Sleep -Seconds 3 } \
 		}; \
 		if (-not $$ok) { throw \"Failed to download $$url after 5 attempts\" }; \
+		if ((Get-Item $$tmp).Length -ne $$expectedSize) { throw 'Pinned backend size mismatch' }; \
+		$$actualSha256 = (Get-FileHash -Path $$tmp -Algorithm SHA256).Hash.ToLowerInvariant(); \
+		if ($$actualSha256 -ne $$expectedSha256) { throw 'Pinned backend SHA-256 mismatch' }; \
 		Expand-Archive -Path $$tmp -DestinationPath $$dir -Force; \
 		Remove-Item $$tmp -Force -ErrorAction SilentlyContinue; \
 		if (-not (Test-Path \"$$dir/build/bin/llama-server.exe\")) { \
@@ -854,81 +853,7 @@ ifeq ($(shell uname -s),Darwin)
 		echo "Warning: No Developer ID Application identity found. Skipping code signing."; \
 	fi
 else ifeq ($(OS),Windows_NT)
-	@mkdir -p src-tauri/resources/llamacpp-backend-upstream
-	@echo "Detecting GPU and selecting best upstream backend for Windows..."; \
-	BACKEND=""; \
-	if [ -n "$(LLAMACPP_BACKEND)" ]; then \
-		BACKEND="$(LLAMACPP_BACKEND)"; \
-		echo "Using manually specified backend: $$BACKEND"; \
-	else \
-		NV_DRIVER=$$(powershell -NoProfile -Command "try { $$g = Get-CimInstance Win32_VideoController -EA Stop | Where-Object { $$_.Name -match 'NVIDIA' } | Select-Object -First 1; if($$g -and $$g.DriverVersion){ $$r = $$g.DriverVersion -replace '\\.','' ; if($$r.Length -ge 5){ $$nv=$$r.Substring($$r.Length-5); $$maj=$$nv.Substring(0,3).TrimStart('0'); $$min=$$nv.Substring(3,2); if(-not $$maj){$$maj='0'}; Write-Output \"$$maj.$$min\" } } } catch {}" 2>/dev/null); \
-		HAS_VULKAN=$$(powershell -NoProfile -Command "if(Test-Path \"$$env:SystemRoot\\System32\\vulkan-1.dll\"){'true'}else{'false'}" 2>/dev/null); \
-		VRAM_MIB=$$(powershell -NoProfile -Command "try{ $$v=(Get-CimInstance Win32_VideoController -EA Stop | ForEach-Object { $$_.AdapterRAM } | Sort-Object -Descending | Select-Object -First 1); if($$v -gt 0){[math]::Floor($$v/1048576)}else{0} } catch { 0 }" 2>/dev/null); \
-		echo "NVIDIA driver: $${NV_DRIVER:-none}  Vulkan: $$HAS_VULKAN  VRAM: $${VRAM_MIB:-0} MiB"; \
-		if [ -n "$$NV_DRIVER" ]; then \
-			NV_MAJOR=$$(echo "$$NV_DRIVER" | cut -d. -f1); \
-			NV_MINOR=$$(echo "$$NV_DRIVER" | cut -d. -f2); \
-			NV_VAL=$$((NV_MAJOR * 100 + NV_MINOR)); \
-			if [ $$NV_VAL -ge 58115 ]; then \
-				BACKEND="win-cuda-13-x64"; \
-			elif [ $$NV_VAL -ge 55161 ]; then \
-				BACKEND="win-cuda-12-x64"; \
-			fi; \
-		fi; \
-		if [ -z "$$BACKEND" ] && [ "$$HAS_VULKAN" = "true" ] && [ "$${VRAM_MIB:-0}" -ge 6144 ]; then \
-			BACKEND="win-vulkan-x64"; \
-		fi; \
-		if [ -z "$$BACKEND" ]; then \
-			BACKEND="win-cpu-x64"; \
-		fi; \
-		echo "Auto-selected backend: $$BACKEND"; \
-	fi; \
-	echo "Resolving backend index from atomic-chat-conf manifest (ATO-199)..."; \
-	TMPREL=$$(mktemp /tmp/llamacpp-upstream-XXXXXX.json); \
-	MANIFEST_URL="https://raw.githubusercontent.com/AtomicBot-ai/atomic-chat-conf/main/backends/manifest.json"; \
-	if ! curl -sS --retry 5 --retry-delay 3 -H "User-Agent: atomic-chat-ci" -o "$$TMPREL" "$$MANIFEST_URL"; then \
-		echo "Error: failed to fetch backend manifest from $$MANIFEST_URL"; \
-		rm -f "$$TMPREL"; exit 1; \
-	fi; \
-	if ! jq -e '.tag_name' "$$TMPREL" >/dev/null 2>&1; then \
-		echo "Error: backend manifest did not parse or lacks tag_name:"; \
-		head -c 500 "$$TMPREL" 2>/dev/null || true; echo; \
-		rm -f "$$TMPREL"; exit 1; \
-	fi; \
-	if echo "$$BACKEND" | grep -Eq '^win-cuda-[0-9]+-x64$$'; then \
-		CUDA_MAJOR=$$(echo "$$BACKEND" | sed -E 's/^win-cuda-([0-9]+)-x64$$/\1/'); \
-		RESOLVED=$$(jq -r --arg major "$$CUDA_MAJOR" '. as $$r | { tag: $$r.tag_name, minors: [ ($$r.assets // [])[].name | select(test("-bin-win-cuda-" + $$major + "\\.[0-9]+-x64\\.zip$$")) | capture("-bin-win-cuda-" + $$major + "\\.(?<m>[0-9]+)-x64\\.zip$$") | .m | tonumber ] } | select((.minors | length) > 0) | "\(.tag) win-cuda-\($$major).\(.minors | max)-x64"' "$$TMPREL"); \
-		TAG=$$(echo "$$RESOLVED" | cut -d" " -f1); \
-		BACKEND=$$(echo "$$RESOLVED" | cut -d" " -f2); \
-	else \
-		TAG=$$(jq -r --arg suf "-bin-$$BACKEND.zip" '. as $$r | if (($$r.assets // []) | any(.name == ("llama-" + $$r.tag_name + $$suf))) then $$r.tag_name else empty end' "$$TMPREL"); \
-	fi; \
-	if [ -z "$$TAG" ] || [ "$$TAG" = "null" ] || [ -z "$$BACKEND" ]; then \
-		echo "Error: backend manifest does not list an asset for backend $$BACKEND (update atomic-chat-conf/backends/manifest.json):"; \
-		head -c 500 "$$TMPREL" 2>/dev/null || true; echo; \
-		rm -f "$$TMPREL"; exit 1; \
-	fi; \
-	rm -f "$$TMPREL"; \
-	URL="https://github.com/ggml-org/llama.cpp/releases/download/$$TAG/llama-$$TAG-bin-$$BACKEND.zip"; \
-	echo "$$TAG" > src-tauri/resources/llamacpp-backend-upstream/version.txt; \
-	echo "$$BACKEND" > src-tauri/resources/llamacpp-backend-upstream/backend.txt; \
-	echo "Release: $$TAG  Backend: $$BACKEND"; \
-	echo "Downloading: $$URL"; \
-	curl -fSL --retry 5 --retry-delay 3 "$$URL" -o /tmp/llamacpp-upstream-backend.zip; \
-	unzip -o /tmp/llamacpp-upstream-backend.zip -d src-tauri/resources/llamacpp-backend-upstream/; \
-	rm -f /tmp/llamacpp-upstream-backend.zip; \
-	if [ ! -f "src-tauri/resources/llamacpp-backend-upstream/build/bin/llama-server.exe" ]; then \
-		if [ -f "src-tauri/resources/llamacpp-backend-upstream/llama-server.exe" ]; then \
-			echo "Relocating flat-extracted binaries into build/bin/..."; \
-			mkdir -p src-tauri/resources/llamacpp-backend-upstream/build/bin; \
-			mv src-tauri/resources/llamacpp-backend-upstream/*.exe src-tauri/resources/llamacpp-backend-upstream/build/bin/; \
-			mv src-tauri/resources/llamacpp-backend-upstream/*.dll src-tauri/resources/llamacpp-backend-upstream/build/bin/ 2>/dev/null || true; \
-		fi; \
-	fi; \
-	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download-llamacpp-cudart-windows.ps1 \
-		-BackendDir src-tauri/resources/llamacpp-backend-upstream -Backend "$$BACKEND" -Tag "$$TAG" || \
-		echo "Warning: cudart merge failed for $$BACKEND (GPU detection may not work)"; \
-	echo "Downloaded and extracted upstream llamacpp backend ($$BACKEND) for Windows successfully"
+	@$(MAKE) download-llamacpp-upstream-backend-win-cpu
 else ifeq ($(shell uname -s),Linux)
 	@mkdir -p src-tauri/resources/llamacpp-backend-upstream
 	@# Per 2026-05-28 ADR *Linux ships only `llamacpp-upstream`*: Phase 1

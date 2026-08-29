@@ -10,10 +10,11 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use super::batch_executor::{execute_batch, PlannedCall};
-use super::grammar::tool_call_grammar_for_profile;
+use super::entitlements::{AgentQuotaHook, AgentTokenUsage};
+use super::grammar::tool_call_grammar_for_catalog;
 use super::llm_client::{
-    parse_tool_calls_for_profile, CompletionRequest, LlamaClientError, LlamaServerClient,
-    ParsedToolCalls,
+    parse_tool_calls_for_profile, CompletionRequest, CompletionTiming, LlamaClientError,
+    LlamaServerClient, ParsedToolCalls,
 };
 use super::loop_guard::{
     format_forced_loop_reply, format_repeat_notice, format_veto_instruction,
@@ -21,10 +22,12 @@ use super::loop_guard::{
 };
 use super::model_profile::AgentModelProfile;
 use super::path_policy::EditableRoots;
-use super::prompt::{build_prompt_with_workspace_for_profile, format_workspace};
+use super::prompt::{
+    build_prompt_with_workspace_for_profile, format_workspace, ITERATION_ONE_TOOLS,
+};
 use super::resource_class::{is_batchable, resource_class_for, ResourceClass};
 use super::session::AgentSessionState;
-use super::skills::{loaded::LoadedSkills, SkillRegistry};
+use super::skills::{loaded::LoadedSkills, SkillRegistry, YOREBOT_STARTER_SKILLS};
 use super::token_budget::{
     compute_effective_conversation_cap, estimate_tokens, COMPLETION_MAX_TOKENS,
     CONFIGURED_CONVERSATION_CAP,
@@ -63,6 +66,10 @@ pub struct RunTurnInput<'a> {
     pub session: &'a mut AgentSessionState,
     pub skill_registry: &'a SkillRegistry,
     pub bundled_script_runtime: Option<&'a Path>,
+    pub quota: Option<&'a dyn AgentQuotaHook>,
+    /// Product entry points set this to true. Tests for the reusable upstream
+    /// loop can opt out without exposing another user-facing mode.
+    pub restrict_to_yorebot_catalog: bool,
 }
 
 pub async fn run_turn(
@@ -76,9 +83,25 @@ pub async fn run_turn(
     let max_steps = input.max_steps.clamp(1, MAX_STEPS);
     let mut notice: Option<String> = None;
     let mut tracker = ToolLoopTracker::default();
-    let loaded_tools = tools::tool_view::LoadedTools::restore(&input.session.loaded_tools);
+    let loaded_tools = if input.restrict_to_yorebot_catalog {
+        tools::tool_view::LoadedTools::default()
+    } else {
+        tools::tool_view::LoadedTools::restore(&input.session.loaded_tools)
+    };
     let loaded_skills = LoadedSkills::restore(&input.session.loaded_skills, input.skill_registry);
     if let Some(selected_skill) = input.selected_skill {
+        if input.restrict_to_yorebot_catalog && !YOREBOT_STARTER_SKILLS.contains(&selected_skill) {
+            let message = format!("Skill is not available in YoreBot: {selected_skill}");
+            emit(AgentEvent::StepError {
+                message: message.clone(),
+                category: "skill".into(),
+            })?;
+            emit(AgentEvent::TurnFinished {
+                reason: "failed".into(),
+                step_count: 0,
+            })?;
+            return Err(message);
+        }
         let outcome = loaded_skills
             .view(selected_skill, input.skill_registry)
             .await;
@@ -96,12 +119,33 @@ pub async fn run_turn(
         }
     }
     input.session.push_user(input.user_message);
-    let tool_grammar = tool_call_grammar_for_profile(input.skill_registry, input.model_profile);
+    let tool_grammar = tool_call_grammar_for_catalog(
+        input.skill_registry,
+        input.model_profile,
+        input.restrict_to_yorebot_catalog,
+    );
 
     for step_index in 0..max_steps {
         if input.cancellation.is_cancelled() {
             finish_session(input.session, &loaded_tools, &loaded_skills, None).await;
             return finish_cancelled(step_index, &mut emit);
+        }
+        match check_agent_quota(input.quota, step_index, &mut emit).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let text = "Today’s free task allowance is used up. Chat remains free, and tasks reset at midnight UTC.".to_owned();
+                emit(AgentEvent::AssistantReply { text: text.clone() })?;
+                emit(AgentEvent::TurnFinished {
+                    reason: "quota".into(),
+                    step_count: step_index,
+                })?;
+                finish_session(input.session, &loaded_tools, &loaded_skills, Some(&text)).await;
+                return Ok(());
+            }
+            Err(error) => {
+                finish_session(input.session, &loaded_tools, &loaded_skills, None).await;
+                return Err(error);
+            }
         }
         emit(AgentEvent::StepStarted { step_index })?;
         let loaded_tool_names = loaded_tools.snapshot().await;
@@ -158,6 +202,8 @@ pub async fn run_turn(
         let mut previous_output = String::new();
         let mut parsed = match completion {
             Ok(completion) => {
+                record_completion_usage(input.quota, &completion.timing, step_index, &mut emit)
+                    .await?;
                 previous_output.clone_from(&completion.content);
                 if !completion.reasoning_content.is_empty() {
                     emit(AgentEvent::ReasoningDelta {
@@ -179,10 +225,20 @@ pub async fn run_turn(
                             &error.to_string(),
                             input.cancellation,
                             input.model_profile,
+                            input.restrict_to_yorebot_catalog,
                         )
                         .await
                         {
-                            Ok(parsed) => parsed,
+                            Ok((parsed, timing)) => {
+                                record_completion_usage(
+                                    input.quota,
+                                    &timing,
+                                    step_index,
+                                    &mut emit,
+                                )
+                                .await?;
+                                parsed
+                            }
                             Err(LlamaClientError::Cancelled) => {
                                 finish_session(input.session, &loaded_tools, &loaded_skills, None)
                                     .await;
@@ -218,10 +274,15 @@ pub async fn run_turn(
                     "Tool-step completion exceeded the 180-second deadline",
                     input.cancellation,
                     input.model_profile,
+                    input.restrict_to_yorebot_catalog,
                 )
                 .await
                 {
-                    Ok(parsed) => parsed,
+                    Ok((parsed, timing)) => {
+                        record_completion_usage(input.quota, &timing, step_index, &mut emit)
+                            .await?;
+                        parsed
+                    }
                     Err(LlamaClientError::Cancelled) => {
                         finish_session(input.session, &loaded_tools, &loaded_skills, None).await;
                         return finish_cancelled(step_index, &mut emit);
@@ -264,7 +325,7 @@ pub async fn run_turn(
                 text: reasoning,
             })?;
         }
-        if let Err(error) = validate_batch(&parsed.calls) {
+        if let Err(error) = validate_batch(&parsed.calls, input.restrict_to_yorebot_catalog) {
             if error.is_approval_only() {
                 let (trimmed, dropped_tools) = trim_to_first_approval_gated(&parsed.calls);
                 let kept_tool = trimmed[0].tool.clone();
@@ -289,10 +350,15 @@ pub async fn run_turn(
                     &error.to_string(),
                     input.cancellation,
                     input.model_profile,
+                    input.restrict_to_yorebot_catalog,
                 )
                 .await
                 {
-                    Ok(repaired) => parsed = repaired,
+                    Ok((repaired, timing)) => {
+                        record_completion_usage(input.quota, &timing, step_index, &mut emit)
+                            .await?;
+                        parsed = repaired;
+                    }
                     Err(LlamaClientError::Cancelled) => {
                         finish_session(input.session, &loaded_tools, &loaded_skills, None).await;
                         return finish_cancelled(step_index, &mut emit);
@@ -509,7 +575,10 @@ impl std::fmt::Display for BatchValidationError {
     }
 }
 
-fn validate_batch(calls: &[ToolCallPayload]) -> Result<(), BatchValidationError> {
+fn validate_batch(
+    calls: &[ToolCallPayload],
+    restrict_to_yorebot_catalog: bool,
+) -> Result<(), BatchValidationError> {
     let mut issues = Vec::new();
     if calls.is_empty() {
         issues.push(BatchValidationIssue {
@@ -525,6 +594,17 @@ fn validate_batch(calls: &[ToolCallPayload]) -> Result<(), BatchValidationError>
     }
     let mut terminal_count = 0;
     for (index, call) in calls.iter().enumerate() {
+        if restrict_to_yorebot_catalog
+            && !ITERATION_ONE_TOOLS
+                .iter()
+                .any(|descriptor| descriptor.name == call.tool)
+        {
+            issues.push(BatchValidationIssue {
+                kind: BatchValidationKind::Unknown,
+                message: format!("Tool is not available in YoreBot: {}", call.tool),
+            });
+            continue;
+        }
         let class = resource_class_for(&call.tool);
         if class == ResourceClass::Unknown {
             issues.push(BatchValidationIssue {
@@ -598,11 +678,83 @@ fn format_batch_trim_notice(kept_tool: &str, dropped_tools: &[String]) -> String
 fn parse_and_validate(
     content: &str,
     profile: AgentModelProfile,
+    restrict_to_yorebot_catalog: bool,
 ) -> Result<ParsedToolCalls, String> {
     let parsed =
         parse_tool_calls_for_profile(content, profile).map_err(|error| error.to_string())?;
-    validate_batch(&parsed.calls).map_err(|error| error.to_string())?;
+    validate_batch(&parsed.calls, restrict_to_yorebot_catalog)
+        .map_err(|error| error.to_string())?;
     Ok(parsed)
+}
+
+async fn check_agent_quota(
+    quota: Option<&dyn AgentQuotaHook>,
+    step_index: u32,
+    emit: &mut impl FnMut(AgentEvent) -> Result<(), String>,
+) -> Result<bool, String> {
+    let Some(quota) = quota else {
+        return Ok(true);
+    };
+    match quota.check().await {
+        Ok(access) => Ok(access.allowed),
+        Err(error) => {
+            emit(AgentEvent::StepError {
+                message: error.clone(),
+                category: "entitlement".into(),
+            })?;
+            emit(AgentEvent::TurnFinished {
+                reason: "failed".into(),
+                step_count: step_index,
+            })?;
+            Err(error)
+        }
+    }
+}
+
+async fn record_completion_usage(
+    quota: Option<&dyn AgentQuotaHook>,
+    timing: &CompletionTiming,
+    step_index: u32,
+    emit: &mut impl FnMut(AgentEvent) -> Result<(), String>,
+) -> Result<(), String> {
+    let Some(quota) = quota else {
+        return Ok(());
+    };
+    let usage = AgentTokenUsage {
+        prompt_tokens: counted_tokens(timing.prompt_tokens),
+        predicted_tokens: counted_tokens(timing.predicted_tokens),
+    };
+    match quota.record(usage).await {
+        Ok(receipt) => emit(AgentEvent::AgentUsage {
+            step_index,
+            prompt_tokens: usage.prompt_tokens,
+            predicted_tokens: usage.predicted_tokens,
+            step_tokens: receipt.step_tokens,
+            day_tokens: receipt.day_tokens,
+            daily_limit: receipt.daily_limit,
+        }),
+        Err(error) => {
+            emit(AgentEvent::StepError {
+                message: error.clone(),
+                category: "entitlement".into(),
+            })?;
+            emit(AgentEvent::TurnFinished {
+                reason: "failed".into(),
+                step_count: step_index + 1,
+            })?;
+            Err(error)
+        }
+    }
+}
+
+fn counted_tokens(value: f64) -> u64 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else if value >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        value.ceil() as u64
+    }
 }
 
 async fn repair_tool_calls(
@@ -612,7 +764,8 @@ async fn repair_tool_calls(
     reason: &str,
     cancellation: &CancellationToken,
     profile: AgentModelProfile,
-) -> Result<ParsedToolCalls, LlamaClientError> {
+    restrict_to_yorebot_catalog: bool,
+) -> Result<(ParsedToolCalls, CompletionTiming), LlamaClientError> {
     let invalid_output = invalid_output.chars().take(4_000).collect::<String>();
     let repair_instruction = format!(
         "### tool-call-repair\nThe previous tool-call output was invalid: {reason}\n\
@@ -643,8 +796,9 @@ async fn repair_tool_calls(
     request.prompt = repair_prompt;
     request.max_tokens = REPAIR_MAX_TOKENS;
     let completion = complete_with_deadline(client, &request, cancellation).await?;
-    parse_and_validate(&completion.content, profile)
-        .map_err(|error| LlamaClientError::InvalidResponse(format!("Repair failed: {error}")))
+    let parsed = parse_and_validate(&completion.content, profile, restrict_to_yorebot_catalog)
+        .map_err(|error| LlamaClientError::InvalidResponse(format!("Repair failed: {error}")))?;
+    Ok((parsed, completion.timing))
 }
 
 async fn complete_with_deadline(

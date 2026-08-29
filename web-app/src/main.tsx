@@ -11,15 +11,9 @@ import './i18n'
 import { installCodeBlockDownloadHandler } from './lib/codeBlockDownload'
 import { runWindowsLlamacppProviderMigration } from './lib/windowsProviderMigration'
 import { runMacosLlamacppDefaultMigration } from './lib/macosLlamacppDefaultMigration'
-import { initSentryFrontend } from './lib/sentry'
 import { useGeneralSetting } from './hooks/useGeneralSetting'
 import { useModelProvider } from './hooks/useModelProvider'
 import GlobalError from './containers/GlobalError'
-
-// ATO-113: arm Sentry before anything else so the React ErrorBoundary and the
-// global window.onerror / unhandledrejection handlers catch the earliest
-// errors. No-op when no DSN was baked in or outside Tauri.
-initSentryFrontend()
 
 // Mobile-specific viewport and styling setup
 const setupMobileViewport = () => {
