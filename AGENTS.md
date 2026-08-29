@@ -309,6 +309,25 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-28 — Separate lightweight Windows package smoke from pinned-model smoke
+- **Context:** Issue #1 needs clean-install proof on every Windows change, while
+  downloading and loading the 5.68 GB ordinary-laptop model is too heavy for
+  every pull request.
+- **Decision:** Run an isolated silent NSIS install/start/uninstall smoke on
+  Windows pull requests, including live prefix-sibling process sentinels. Keep
+  the exact Qwen3.5-9B plus b10431 CPU response smoke manual-only; obtain both
+  artifacts from the product source pins, verify size and SHA-256, then deny
+  outbound access to the exact server executable before loopback inference.
+- **Consequences:** Package regressions and over-broad uninstaller cleanup fail
+  routine CI without a model download. The manual smoke proves one nonempty
+  pinned local response, but makes no GUI, full-Agent, compatibility, or speed
+  claim.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`.github/workflows/windows-internal.yml`](.github/workflows/windows-internal.yml),
+  [`scripts/test-windows-installer.ps1`](scripts/test-windows-installer.ps1),
+  [`scripts/test-windows-pinned-model.ps1`](scripts/test-windows-pinned-model.ps1).
+
 ### 2026-08-28 — Ship YoreBot as a fixed local appliance
 - **Context:** Issue #1 requires a weekend MVP that ordinary users can install
   without choosing models, providers, runtimes, or technical settings.

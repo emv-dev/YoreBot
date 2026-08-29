@@ -33,6 +33,27 @@ jobs:
           corepack enable
           corepack prepare yarn@4.5.3 --activate
 
+      - name: Test Windows acceptance contracts
+        shell: pwsh
+        run: |
+          node --test scripts/tests/windows-acceptance-contracts.test.mjs
+          foreach ($script in @(
+            "scripts/test-windows-installer.ps1",
+            "scripts/test-windows-pinned-model.ps1"
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref] $tokens,
+              [ref] $parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_ }
+              throw "PowerShell syntax errors in $script"
+            }
+          }
+
       - name: Install dependencies
         shell: pwsh
         run: yarn install --immutable
@@ -194,9 +215,32 @@ jobs:
             Copy-Item $installer.FullName (Join-Path "artifacts" $installer.Name)
           }
 
+      - name: Smoke fresh NSIS install and uninstall
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "artifacts" -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
+
       - uses: actions/upload-artifact@v4
         with:
           name: YoreBot-Windows-unsigned-internal
           path: artifacts/*.exe
           if-no-files-found: error
           retention-days: 7
+
+  pinned-model-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pinned model on pinned CPU runtime
+        shell: pwsh
+        run: |
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-model-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-pinned-model.ps1 -WorkRoot $workRoot
