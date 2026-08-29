@@ -156,6 +156,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           yarn build:tauri:plugin:api
           yarn build:extensions:win32
+          yarn verify:extensions:win32
           yarn download:bin
           yarn copy:assets:tauri
           yarn build:icon

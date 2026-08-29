@@ -28,26 +28,31 @@ pub fn get_active_extensions<R: Runtime>(app: AppHandle<R>) -> Vec<serde_json::V
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let mut path = get_jan_extensions_path(app);
+        let extensions_path = get_jan_extensions_path(app);
+        let mut path = extensions_path.clone();
         path.push("extensions.json");
         log::info!("get jan extensions, path: {path:?}");
 
         let contents = fs::read_to_string(path);
         let contents: Vec<serde_json::Value> = match contents {
             Ok(data) => match serde_json::from_str::<Vec<serde_json::Value>>(&data) {
-                Ok(exts) => exts
-                    .into_iter()
-                    .map(|ext| {
-                        serde_json::json!({
-                            "url": ext["url"],
-                            "name": ext["name"],
-                            "productName": ext["productName"],
-                            "active": ext["_active"],
-                            "description": ext["description"],
-                            "version": ext["version"]
+                Ok(exts) => {
+                    #[cfg(target_os = "windows")]
+                    let exts =
+                        setup::filter_yorebot_windows_extension_manifest(&extensions_path, exts);
+                    exts.into_iter()
+                        .map(|ext| {
+                            serde_json::json!({
+                                "url": ext["url"],
+                                "name": ext["name"],
+                                "productName": ext["productName"],
+                                "active": ext["_active"],
+                                "description": ext["description"],
+                                "version": ext["version"]
+                            })
                         })
-                    })
-                    .collect(),
+                        .collect()
+                }
                 Err(error) => {
                     log::error!("Failed to parse extensions.json: {error}");
                     vec![]

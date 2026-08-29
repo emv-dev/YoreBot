@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Code2, Eye } from 'lucide-react'
+import { Code2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { useArtifactStore } from '@/stores/artifact-store'
@@ -28,20 +28,6 @@ export function ArtifactTrigger({
 
   const generating = streaming
 
-  // Auto-open once this artifact's first generation settles; skip historical blocks.
-  const autoOpenedRef = useRef(false)
-  const wasGeneratingRef = useRef(false)
-  useEffect(() => {
-    if (generating) {
-      wasGeneratingRef.current = true
-      return
-    }
-    if (wasGeneratingRef.current && !autoOpenedRef.current && code) {
-      autoOpenedRef.current = true
-      open(id, code, false)
-    }
-  }, [generating, code, id, open])
-
   useEffect(() => {
     if (!generating) return
     const target = estimateHtmlProgress(code)
@@ -50,10 +36,10 @@ export function ArtifactTrigger({
 
   const progressPct = Math.round(progress * 100)
   const subtitle = generating
-    ? `Generating preview… ${progressPct}%`
+    ? `Generating HTML… ${progressPct}%`
     : isActive
       ? 'Showing in panel'
-      : 'Click to open the live preview'
+      : 'Click to view the HTML code'
 
   return (
     <button
@@ -70,7 +56,7 @@ export function ArtifactTrigger({
         <Code2 size={18} className="text-muted-foreground" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-sm">HTML preview</div>
+        <div className="truncate font-medium text-sm">HTML file</div>
         <div className="truncate text-muted-foreground text-xs">{subtitle}</div>
         {generating && (
           <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted">
@@ -82,7 +68,7 @@ export function ArtifactTrigger({
         )}
       </div>
       {!generating && (
-        <Eye size={16} className="shrink-0 text-muted-foreground" />
+        <Code2 size={16} className="shrink-0 text-muted-foreground" />
       )}
     </button>
   )
@@ -146,7 +132,7 @@ export function ArtifactPanel() {
     return () => clearTimeout(t)
   }, [isOpen])
 
-  // Overlay (below) keeps mousemove/up firing while the iframe swallows pointer events.
+  // Overlay (below) keeps resize gestures captured across the panel.
   useEffect(() => {
     if (!dragging) return
     const onMove = (e: MouseEvent) =>

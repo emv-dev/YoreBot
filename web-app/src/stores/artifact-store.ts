@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 /**
- * Drives the side panel that hosts the live HTML artifact preview.
+ * Drives the side panel that hosts inert HTML artifact code.
  *
  * Only one artifact is shown at a time. Each inline trigger owns a stable
  * `sourceId`; `update` is a no-op unless it targets the artifact currently

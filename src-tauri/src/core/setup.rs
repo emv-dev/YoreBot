@@ -1,4 +1,9 @@
 use flate2::read::GzDecoder;
+#[cfg(any(target_os = "windows", test))]
+use std::{
+    collections::HashSet,
+    path::{Component, Path},
+};
 use std::{
     fs::{self, File},
     io::Read,
@@ -23,6 +28,108 @@ use super::{
     extensions::commands::get_jan_extensions_path, mcp::helpers::run_mcp_commands, state::AppState,
 };
 
+#[cfg(any(target_os = "windows", test))]
+const YOREBOT_WINDOWS_EXTENSION_ALLOWLIST: [&str; 6] = [
+    "@janhq/assistant-extension",
+    "@janhq/conversational-extension",
+    "@janhq/download-extension",
+    "@janhq/llamacpp-upstream-extension",
+    "@janhq/rag-extension",
+    "@janhq/vector-db-extension",
+];
+
+#[cfg(any(target_os = "windows", test))]
+const RETIRED_WINDOWS_TURBOQUANT_EXTENSION: &str = "@janhq/llamacpp-extension";
+
+#[cfg(any(target_os = "windows", test))]
+fn is_yorebot_windows_extension(name: &str) -> bool {
+    YOREBOT_WINDOWS_EXTENSION_ALLOWLIST.contains(&name)
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn filter_yorebot_windows_extension_manifest(
+    extensions_path: &Path,
+    extensions: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let mut names = HashSet::new();
+    extensions
+        .into_iter()
+        .filter(|extension| {
+            let Some(name) = extension.get("name").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            if !is_yorebot_windows_extension(name) || !names.insert(name.to_string()) {
+                return false;
+            }
+
+            let expected_origin = extensions_path.join(name);
+            let Some(origin) = extension.get("origin").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            let Some(url) = extension.get("url").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            let url = Path::new(url);
+            Path::new(origin) == expected_origin
+                && url.starts_with(&expected_origin)
+                && !url
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+                && url.is_file()
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn remove_managed_extension_path(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    }
+}
+
+/// Make a same-version Windows install safe before the normal early return.
+/// Unknown/custom files are preserved but removed from the runtime manifest;
+/// the one retired first-party package is also removed from disk.
+#[cfg(any(target_os = "windows", test))]
+fn prepare_yorebot_windows_extension_inventory(extensions_path: &Path) -> Result<bool, String> {
+    let manifest_path = extensions_path.join("extensions.json");
+    let existing = match fs::read_to_string(&manifest_path) {
+        Ok(contents) => {
+            serde_json::from_str::<Vec<serde_json::Value>>(&contents).unwrap_or_else(|_| vec![])
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(error) => return Err(error.to_string()),
+    };
+
+    let filtered = filter_yorebot_windows_extension_manifest(extensions_path, existing);
+    let names: HashSet<_> = filtered
+        .iter()
+        .filter_map(|extension| extension.get("name").and_then(|value| value.as_str()))
+        .collect();
+
+    // Rewrite first: even if stale-file cleanup fails, disallowed extensions
+    // are no longer part of the runtime inventory on the next frontend read.
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&filtered).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    remove_managed_extension_path(&extensions_path.join(RETIRED_WINDOWS_TURBOQUANT_EXTENSION))?;
+
+    Ok(names.len() == YOREBOT_WINDOWS_EXTENSION_ALLOWLIST.len()
+        && YOREBOT_WINDOWS_EXTENSION_ALLOWLIST
+            .iter()
+            .all(|name| extensions_path.join(name).is_dir()))
+}
+
 pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> Result<(), String> {
     // Skip extension installation on mobile platforms
     // Mobile uses pre-bundled extensions loaded via MobileCoreService in the frontend
@@ -45,16 +152,29 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
     if std::env::var("IS_CLEAN").is_ok() {
         clean_up = true;
     }
+
+    #[cfg(target_os = "windows")]
+    let installed_inventory_ready = if extensions_path.exists() {
+        prepare_yorebot_windows_extension_inventory(&extensions_path)?
+    } else {
+        false
+    };
+
     log::info!("Installing extensions. Clean up: {clean_up}");
     if !clean_up && extensions_path.exists() {
+        #[cfg(target_os = "windows")]
+        if installed_inventory_ready {
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
         return Ok(());
     }
 
-    // Attempt to remove extensions folder
-    if extensions_path.exists() {
-        fs::remove_dir_all(&extensions_path).unwrap_or_else(|_| {
-            log::info!("Failed to remove existing extensions folder, it may not exist.");
-        });
+    // A forced reinstall keeps the existing whole-directory behavior. A
+    // same-version Windows repair updates only managed package directories so
+    // unlisted user files stay inert and untouched.
+    if clean_up && extensions_path.exists() {
+        fs::remove_dir_all(&extensions_path).map_err(|error| error.to_string())?;
     }
 
     // Attempt to create it again
@@ -94,7 +214,19 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
                 })?;
 
             let extension_name = extension_name.ok_or("package.json not found in archive")?;
+
+            #[cfg(target_os = "windows")]
+            if !is_yorebot_windows_extension(&extension_name) {
+                return Err(format!(
+                    "Bundled Windows extension is not in the YoreBot allowlist: {extension_name}"
+                ));
+            }
+
             let extension_dir = extensions_path.join(extension_name.clone());
+            #[cfg(target_os = "windows")]
+            if !clean_up {
+                remove_managed_extension_path(&extension_dir)?;
+            }
             fs::create_dir_all(&extension_dir).map_err(|e| e.to_string())?;
 
             let tar_gz = File::open(&path).map_err(|e| e.to_string())?;
@@ -139,6 +271,7 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
                     .unwrap_or(""),
             });
 
+            extensions_list.retain(|extension| extension["name"] != extension_name);
             extensions_list.push(new_extension);
 
             log::info!("Installed extension to {extension_dir:?}");
@@ -651,4 +784,124 @@ fn setup_window_theme_listener<R: Runtime>(
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn same_version_windows_inventory_disables_and_removes_stale_extensions() {
+        let temp = tempfile::tempdir().expect("temporary extension inventory");
+        let root = temp.path();
+        let turboquant = root.join("@janhq/llamacpp-extension");
+        let unrelated = root.join("custom-extension/keep.txt");
+        let mut legacy_manifest = Vec::new();
+        for name in YOREBOT_WINDOWS_EXTENSION_ALLOWLIST {
+            let directory = root.join(name);
+            fs::create_dir_all(&directory).expect("allowed extension directory");
+            fs::write(directory.join("index.js"), "allowed").expect("allowed extension file");
+            legacy_manifest.push(json!({
+                "name": name,
+                "url": directory.join("index.js"),
+                "origin": directory,
+                "active": true
+            }));
+        }
+        fs::create_dir_all(&turboquant).expect("stale TurboQuant directory");
+        fs::write(turboquant.join("index.js"), "stale").expect("stale extension file");
+        fs::create_dir_all(unrelated.parent().expect("unrelated parent"))
+            .expect("unrelated extension directory");
+        fs::write(&unrelated, "preserve me").expect("unrelated sentinel");
+        legacy_manifest.push(json!({
+            "name": RETIRED_WINDOWS_TURBOQUANT_EXTENSION,
+            "url": turboquant.join("index.js"),
+            "active": true
+        }));
+        legacy_manifest.push(json!({
+            "name": "custom-extension",
+            "url": unrelated,
+            "active": true
+        }));
+        fs::write(
+            root.join("extensions.json"),
+            serde_json::to_vec_pretty(&legacy_manifest).expect("legacy manifest"),
+        )
+        .expect("write legacy manifest");
+
+        assert!(prepare_yorebot_windows_extension_inventory(root)
+            .expect("same-version migration should succeed"));
+
+        let migrated: Vec<serde_json::Value> = serde_json::from_slice(
+            &fs::read(root.join("extensions.json")).expect("migrated manifest"),
+        )
+        .expect("valid migrated manifest");
+        let migrated_names: HashSet<_> = migrated
+            .iter()
+            .filter_map(|extension| extension["name"].as_str())
+            .collect();
+        assert_eq!(
+            migrated_names.len(),
+            YOREBOT_WINDOWS_EXTENSION_ALLOWLIST.len()
+        );
+        for name in YOREBOT_WINDOWS_EXTENSION_ALLOWLIST {
+            assert!(migrated_names.contains(name), "missing {name}");
+        }
+        assert!(!fs::read_to_string(root.join("extensions.json"))
+            .expect("migrated manifest text")
+            .contains("llamacpp-extension\""));
+        assert!(!turboquant.exists());
+        assert_eq!(
+            fs::read_to_string(&unrelated).expect("unrelated sentinel survives"),
+            "preserve me"
+        );
+    }
+
+    #[test]
+    fn malformed_or_nonlocal_windows_inventory_fails_closed_and_requests_reseed() {
+        let temp = tempfile::tempdir().expect("temporary extension inventory");
+        let root = temp.path();
+        let turboquant = root.join(RETIRED_WINDOWS_TURBOQUANT_EXTENSION);
+        let unrelated = root.join("custom-extension/keep.txt");
+        fs::create_dir_all(&turboquant).expect("stale TurboQuant directory");
+        fs::create_dir_all(unrelated.parent().expect("unrelated parent"))
+            .expect("unrelated extension directory");
+        fs::write(turboquant.join("index.js"), "stale").expect("stale extension file");
+        fs::write(&unrelated, "preserve me").expect("unrelated sentinel");
+        fs::write(root.join("extensions.json"), "not valid JSON").expect("malformed manifest");
+
+        assert!(!prepare_yorebot_windows_extension_inventory(root)
+            .expect("malformed manifest should be disabled"));
+        assert_eq!(
+            fs::read_to_string(root.join("extensions.json")).expect("safe manifest"),
+            "[]"
+        );
+        assert!(!turboquant.exists());
+        assert!(unrelated.exists());
+
+        let allowed_name = YOREBOT_WINDOWS_EXTENSION_ALLOWLIST[0];
+        let allowed_dir = root.join(allowed_name);
+        fs::create_dir_all(&allowed_dir).expect("allowed extension directory");
+        fs::write(allowed_dir.join("index.js"), "allowed").expect("allowed extension file");
+        fs::write(
+            root.join("extensions.json"),
+            serde_json::to_vec_pretty(&vec![json!({
+                "name": allowed_name,
+                "origin": allowed_dir,
+                "url": "https://example.invalid/extension.js",
+                "active": true
+            })])
+            .expect("nonlocal manifest"),
+        )
+        .expect("write nonlocal manifest");
+
+        assert!(!prepare_yorebot_windows_extension_inventory(root)
+            .expect("nonlocal manifest should be disabled"));
+        assert_eq!(
+            fs::read_to_string(root.join("extensions.json")).expect("safe manifest"),
+            "[]"
+        );
+        assert!(unrelated.exists());
+    }
 }
