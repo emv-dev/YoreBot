@@ -38,7 +38,7 @@ or recovery path and therefore cannot support a public “forever” claim.
 
 | Option | Reinstall | Different computer | Offline use | Abuse or resale | Company or server disappears | MVP cost |
 |---|---|---|---|---|---|---|
-| Hosted account restore | Works while the provider can find and verify the purchase | Same dependency; usually easy while the account/provider exists | A fresh install cannot restore offline; a cached local flag is not durable proof | Provider can reject disabled, refunded, disputed, or shared keys | Existing installs might keep a local grant, but lost installs cannot be restored truthfully | Lowest permanent-pack code, but fails D6 |
+| Hosted account restore | Works while the provider can find and verify the purchase | Works while the provider exists; any sharing limit also needs a transfer rule | A fresh install cannot restore offline; a cached local flag is not durable proof | The app can reject provider-reported disabled, refunded, disputed, or chargeback states; current YoreBot does not detect sharing | Existing installs might keep a local grant, but lost installs cannot be restored truthfully | Lowest only if sharing is accepted; device/use policy and recovery support add work, and it still fails D6 |
 | Signed portable license | Import the backed-up token; no server call | Import the same token; no device transfer | Full offline verification | The signature prevents forgery, but a portable token can be copied or resold | Already-issued, backed-up tokens keep verifying; lost tokens cannot be reissued | Smallest truthful permanent design, but needs an issuer, key custody, format, import/export, and tests |
 | Device-bound recovery | Works only if the bound device key survives; otherwise recovery is required | Requires transfer or reissue | Works only on the activated device | Best copying resistance | Activated devices can keep working; transfer and recovery stop with the service | Most code and support; contradicts portable recovery |
 | Retire permanent packs from MVP | No permanent entitlement to restore | No permanent entitlement to transfer | Free local Chat remains; subscription-only Agent access keeps its existing verification fallback | No permanent token to police | Makes no forever promise; users retain whatever free local files and compatible app they already have | No new licensing system |
@@ -51,6 +51,12 @@ and that the app—not Gumroad—decides how a key is enforced. Its verification
 API can report disabled, refunded, disputed, chargeback, and subscription
 states ([license-key documentation](https://gumroad.com/help/article/76-license-keys),
 [purchase recovery](https://gumroad.com/help/article/199-how-do-i-access-my-purchase)).
+
+Current YoreBot sends `increment_uses_count=false` and checks no device id or
+uses limit. A shared key is therefore not detected. Detecting sharing would
+require a new device/use policy, activation state, transfer path, and support
+rules that distinguish an ordinary computer replacement from resale. That
+adds code and conflicts with easy cross-device recovery.
 
 That is suitable for subscriptions. It is not independent “forever” proof:
 clean-install recovery still depends on a reachable provider and retained
