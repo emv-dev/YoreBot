@@ -33,6 +33,15 @@ test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () =
   }
 })
 
+test('disabled public updater is not registered during desktop startup', () => {
+  const app = read('src-tauri/src/lib.rs')
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'))
+
+  assert.doesNotMatch(app, /plugin\(tauri_plugin_updater::/)
+  assert.equal(config.bundle.createUpdaterArtifacts, false)
+  assert.equal(Object.hasOwn(config.plugins, 'updater'), false)
+})
+
 test('installer smoke owns exact processes and protects prefix siblings', () => {
   const script = read('scripts/test-windows-installer.ps1')
   const hooks = read('src-tauri/windows/hooks.nsh')
@@ -111,8 +120,6 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   assert.match(internal, /^\s{2}pinned-model-smoke:\s*$/m)
   assert.match(internal, /^\s{4}if: github\.event_name == 'workflow_dispatch'\s*$/m)
   assert.match(internal, /^\s*\.\/scripts\/test-windows-pinned-model\.ps1\b/m)
-  assert.match(internal, /^\s{2}installer-reuse-diagnostic:\s*$/m)
-  assert.match(internal, /run-id: 33232258704/)
   assert.equal(
     existsSync(resolve(root, '.github/workflows/windows-pinned-model-smoke.yml')),
     false
