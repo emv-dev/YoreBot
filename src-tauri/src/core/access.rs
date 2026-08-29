@@ -455,10 +455,11 @@ pub async fn yorebot_access_forget(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
+    use std::{fs, sync::Mutex as StdMutex};
 
     use super::*;
     use crate::core::agent::entitlements::EntitlementStore;
+    use tempfile::TempDir;
 
     fn config() -> AccessConfig {
         AccessConfig::new(
@@ -687,6 +688,32 @@ mod tests {
         assert!(status.has_saved_key);
         assert_eq!(vault.load().unwrap().as_deref(), Some("VALID-LICENSE-123"));
         assert!(entitlements.lock().await.has_verified_subscription());
+    }
+
+    #[tokio::test]
+    async fn restored_secret_never_enters_the_mutable_entitlement_file() {
+        let temp = TempDir::new().unwrap();
+        let entitlements = entitlements();
+        let vault = FakeVault::default();
+        restore_with(
+            &entitlements,
+            Some(&config()),
+            &FakeVerifier(Ok(())),
+            &vault,
+            "SECRET-LICENSE-123",
+        )
+        .await
+        .unwrap();
+        entitlements
+            .lock()
+            .await
+            .check_at(temp.path(), "model-a", chrono::Utc::now())
+            .unwrap();
+
+        let persisted = fs::read_to_string(temp.path().join("yorebot-entitlements.json")).unwrap();
+        assert!(!persisted.contains("SECRET-LICENSE-123"));
+        assert!(!persisted.contains("private@example.com"));
+        assert_eq!(vault.load().unwrap().as_deref(), Some("SECRET-LICENSE-123"));
     }
 
     #[tokio::test]
