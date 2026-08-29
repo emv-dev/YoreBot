@@ -7,15 +7,14 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 const ENTITLEMENTS_FILE: &str = "yorebot-entitlements.json";
-const ENTITLEMENTS_VERSION: u32 = 1;
+const ENTITLEMENTS_VERSION: u32 = 2;
 const MAX_ENTITLEMENTS_BYTES: u64 = 256 * 1024;
 pub const FREE_AGENT_TOKENS_PER_DAY: u64 = 2_000_000;
-pub const FULL_TRIAL_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DailyAgentUsage {
@@ -35,8 +34,6 @@ impl Default for DailyAgentUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EntitlementFile {
     version: u32,
-    trial_started_at: Option<DateTime<Utc>>,
-    subscription_expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     permanent_model_packs: BTreeSet<String>,
     #[serde(default)]
@@ -47,17 +44,23 @@ impl Default for EntitlementFile {
     fn default() -> Self {
         Self {
             version: ENTITLEMENTS_VERSION,
-            trial_started_at: None,
-            subscription_expires_at: None,
             permanent_model_packs: BTreeSet::new(),
             agent_usage: DailyAgentUsage::default(),
         }
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct LegacyEntitlementFileV1 {
+    version: u32,
+    #[serde(default)]
+    permanent_model_packs: BTreeSet<String>,
+    #[serde(default)]
+    agent_usage: DailyAgentUsage,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentAccessTier {
-    Trial,
     Subscription,
     PermanentModelPack,
     Free,
@@ -92,8 +95,6 @@ pub struct AgentUsageReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntitlementGrant {
-    StartTrial(DateTime<Utc>),
-    SubscriptionUntil(DateTime<Utc>),
     PermanentModelPack(String),
 }
 
@@ -101,6 +102,7 @@ pub enum EntitlementGrant {
 pub struct EntitlementStore {
     data_folder: Option<PathBuf>,
     state: EntitlementFile,
+    verified_subscription: bool,
 }
 
 impl EntitlementStore {
@@ -109,7 +111,7 @@ impl EntitlementStore {
             return Ok(());
         }
         let path = data_folder.join(ENTITLEMENTS_FILE);
-        self.state = if path.exists() {
+        let (state, migrated) = if path.exists() {
             let metadata = fs::metadata(&path)
                 .map_err(|error| format!("Failed to inspect YoreBot entitlements: {error}"))?;
             if metadata.len() > MAX_ENTITLEMENTS_BYTES {
@@ -117,19 +119,42 @@ impl EntitlementStore {
             }
             let bytes = fs::read(&path)
                 .map_err(|error| format!("Failed to read YoreBot entitlements: {error}"))?;
-            let state: EntitlementFile = serde_json::from_slice(&bytes)
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
                 .map_err(|error| format!("Invalid YoreBot entitlements: {error}"))?;
-            if state.version != ENTITLEMENTS_VERSION {
-                return Err(format!(
-                    "Unsupported YoreBot entitlements version: {}",
-                    state.version
-                ));
+            match value.get("version").and_then(serde_json::Value::as_u64) {
+                Some(1) => {
+                    let legacy: LegacyEntitlementFileV1 = serde_json::from_value(value)
+                        .map_err(|error| format!("Invalid YoreBot entitlements: {error}"))?;
+                    debug_assert_eq!(legacy.version, 1);
+                    (
+                        EntitlementFile {
+                            version: ENTITLEMENTS_VERSION,
+                            permanent_model_packs: legacy.permanent_model_packs,
+                            agent_usage: legacy.agent_usage,
+                        },
+                        true,
+                    )
+                }
+                Some(version) if version == u64::from(ENTITLEMENTS_VERSION) => (
+                    serde_json::from_value(value)
+                        .map_err(|error| format!("Invalid YoreBot entitlements: {error}"))?,
+                    false,
+                ),
+                Some(version) => {
+                    return Err(format!(
+                        "Unsupported YoreBot entitlements version: {version}"
+                    ))
+                }
+                None => return Err("Invalid YoreBot entitlements version".into()),
             }
-            state
         } else {
-            EntitlementFile::default()
+            (EntitlementFile::default(), false)
         };
+        self.state = state;
         self.data_folder = Some(data_folder.to_path_buf());
+        if migrated {
+            self.persist()?;
+        }
         Ok(())
     }
 
@@ -143,7 +168,7 @@ impl EntitlementStore {
         if self.normalize_day(now) {
             self.persist()?;
         }
-        Ok(self.access(model_id, now))
+        Ok(self.access(model_id))
     }
 
     pub fn record_at(
@@ -170,12 +195,6 @@ impl EntitlementStore {
     ) -> Result<(), String> {
         self.load_for_data_folder(data_folder)?;
         match grant {
-            EntitlementGrant::StartTrial(started_at) => {
-                self.state.trial_started_at = Some(started_at)
-            }
-            EntitlementGrant::SubscriptionUntil(expires_at) => {
-                self.state.subscription_expires_at = Some(expires_at)
-            }
             EntitlementGrant::PermanentModelPack(model_id) => {
                 self.state.permanent_model_packs.insert(model_id);
             }
@@ -183,19 +202,17 @@ impl EntitlementStore {
         self.persist()
     }
 
-    fn access(&self, model_id: &str, now: DateTime<Utc>) -> AgentAccess {
-        let tier = if self
-            .state
-            .subscription_expires_at
-            .is_some_and(|expires_at| now < expires_at)
-        {
+    pub fn set_verified_subscription(&mut self, active: bool) {
+        self.verified_subscription = active;
+    }
+
+    pub fn has_verified_subscription(&self) -> bool {
+        self.verified_subscription
+    }
+
+    fn access(&self, model_id: &str) -> AgentAccess {
+        let tier = if self.verified_subscription {
             AgentAccessTier::Subscription
-        } else if self
-            .state
-            .trial_started_at
-            .is_some_and(|started_at| now < started_at + Duration::days(FULL_TRIAL_DAYS))
-        {
-            AgentAccessTier::Trial
         } else if self.state.permanent_model_packs.contains(model_id) {
             AgentAccessTier::PermanentModelPack
         } else {
@@ -349,25 +366,71 @@ mod tests {
     }
 
     #[test]
-    fn fresh_user_is_free_and_explicit_trial_lasts_seven_days() {
+    fn fresh_user_is_free_without_local_paid_authority() {
         let temp = TempDir::new().unwrap();
         let mut store = EntitlementStore::default();
         let fresh = store.check_at(temp.path(), "model-a", at(1, 0)).unwrap();
         assert_eq!(fresh.tier, AgentAccessTier::Free);
         assert_eq!(fresh.daily_limit, Some(FREE_AGENT_TOKENS_PER_DAY));
-        assert_eq!(store.state.trial_started_at, None);
+        assert!(!store.has_verified_subscription());
+    }
 
-        store
-            .apply_grant(temp.path(), EntitlementGrant::StartTrial(at(1, 0)))
+    #[test]
+    fn crafted_local_paid_fields_cannot_unlock_agent() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(ENTITLEMENTS_FILE),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "trial_started_at": "2026-08-01T00:00:00Z",
+                "subscription_expires_at": "2099-01-01T00:00:00Z",
+                "permanent_model_packs": ["model-a"],
+                "agent_usage": {
+                    "day_utc": "2026-08-01",
+                    "tokens": FREE_AGENT_TOKENS_PER_DAY
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut store = EntitlementStore::default();
+        let access = store.check_at(temp.path(), "model-a", at(1, 1)).unwrap();
+
+        assert_eq!(access.tier, AgentAccessTier::PermanentModelPack);
+        assert_eq!(access.daily_limit, Some(FREE_AGENT_TOKENS_PER_DAY));
+        assert!(!access.allowed);
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&fs::read(temp.path().join(ENTITLEMENTS_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(migrated["version"], ENTITLEMENTS_VERSION);
+        assert!(migrated.get("trial_started_at").is_none());
+        assert!(migrated.get("subscription_expires_at").is_none());
+        assert_eq!(migrated["agent_usage"]["tokens"], FREE_AGENT_TOKENS_PER_DAY);
+    }
+
+    #[test]
+    fn crafted_v2_paid_fields_are_ignored_and_never_rewritten() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(ENTITLEMENTS_FILE),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": ENTITLEMENTS_VERSION,
+                "trial_started_at": "2026-08-01T00:00:00Z",
+                "subscription_expires_at": "2099-01-01T00:00:00Z",
+                "permanent_model_packs": [],
+                "agent_usage": { "day_utc": "2026-08-01", "tokens": 0 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let access = EntitlementStore::default()
+            .check_at(temp.path(), "model-a", at(1, 1))
             .unwrap();
-        let start = store.check_at(temp.path(), "model-a", at(1, 0)).unwrap();
-        assert_eq!(start.tier, AgentAccessTier::Trial);
-        assert!(start.allowed);
-        let last_moment = store.check_at(temp.path(), "model-a", at(7, 23)).unwrap();
-        assert_eq!(last_moment.tier, AgentAccessTier::Trial);
-        let expired = store.check_at(temp.path(), "model-a", at(8, 0)).unwrap();
-        assert_eq!(expired.tier, AgentAccessTier::Free);
-        assert_eq!(expired.daily_limit, Some(FREE_AGENT_TOKENS_PER_DAY));
+
+        assert_eq!(access.tier, AgentAccessTier::Free);
+        assert_eq!(access.daily_limit, Some(FREE_AGENT_TOKENS_PER_DAY));
     }
 
     #[test]
@@ -426,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn active_trial_and_subscription_bypass_the_agent_limit() {
+    fn only_process_verified_subscription_bypasses_the_agent_limit() {
         let temp = TempDir::new().unwrap();
         let mut store = EntitlementStore::default();
         store
@@ -453,21 +516,16 @@ mod tests {
                 .allowed
         );
 
-        store
-            .apply_grant(temp.path(), EntitlementGrant::StartTrial(at(1, 0)))
-            .unwrap();
-        let trial = store.check_at(temp.path(), "model-a", at(1, 0)).unwrap();
-        assert_eq!(trial.tier, AgentAccessTier::Trial);
-        assert_eq!(trial.daily_limit, None);
-        assert!(trial.allowed);
-
-        store
-            .apply_grant(temp.path(), EntitlementGrant::SubscriptionUntil(at(10, 0)))
-            .unwrap();
+        store.set_verified_subscription(true);
         let subscription = store.check_at(temp.path(), "model-a", at(1, 0)).unwrap();
         assert_eq!(subscription.tier, AgentAccessTier::Subscription);
         assert_eq!(subscription.daily_limit, None);
         assert!(subscription.allowed);
+
+        store.set_verified_subscription(false);
+        let free_again = store.check_at(temp.path(), "model-a", at(1, 0)).unwrap();
+        assert_eq!(free_again.tier, AgentAccessTier::PermanentModelPack);
+        assert!(!free_again.allowed);
     }
 
     #[test]
@@ -497,5 +555,40 @@ mod tests {
         assert!(EntitlementStore::default()
             .check_at(temp.path(), "model-a", at(1, 2))
             .is_err());
+    }
+
+    #[test]
+    fn verified_subscription_is_process_only_and_never_serialized() {
+        let temp = TempDir::new().unwrap();
+        let mut store = EntitlementStore::default();
+        store.set_verified_subscription(true);
+        store
+            .record_at(
+                temp.path(),
+                "model-a",
+                AgentTokenUsage {
+                    prompt_tokens: 10,
+                    predicted_tokens: 5,
+                },
+                at(1, 0),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .check_at(temp.path(), "model-a", at(1, 1))
+                .unwrap()
+                .tier,
+            AgentAccessTier::Subscription
+        );
+
+        let persisted = fs::read_to_string(temp.path().join(ENTITLEMENTS_FILE)).unwrap();
+        assert!(!persisted.contains("subscription"));
+        assert!(!persisted.contains("trial"));
+
+        let access = EntitlementStore::default()
+            .check_at(temp.path(), "model-a", at(1, 1))
+            .unwrap();
+        assert_eq!(access.tier, AgentAccessTier::Free);
+        assert_eq!(access.day_tokens, 15);
     }
 }

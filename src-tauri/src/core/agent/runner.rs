@@ -153,7 +153,7 @@ async fn run_turn_with_deadline_inner(
         match check_agent_quota(input.quota, step_index, &mut emit).await {
             Ok(true) => {}
             Ok(false) => {
-                let text = "Today’s free task allowance is used up. Chat remains free, and tasks reset at midnight UTC.".to_owned();
+                let text = "Today’s free task allowance is used up. Chat remains free, tasks reset at midnight UTC, or open Access in the sidebar to keep working now.".to_owned();
                 emit(AgentEvent::AssistantReply { text: text.clone() })?;
                 emit(AgentEvent::TurnFinished {
                     reason: "quota".into(),

@@ -309,6 +309,31 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Verify Gumroad subscriptions without a payment backend
+- **Context:** Issue #6 needs the seven-day trial and monthly/yearly catalog
+  access, while mutable local entitlement JSON cannot be trusted with paid
+  authority and the weekend MVP does not need a YoreBot payment service.
+- **Decision:** Send users to one hosted Gumroad membership product and verify
+  its license through the public endpoint with an exact build-time product id.
+  Accept only active monthly/yearly responses with no refund, dispute,
+  chargeback, end, cancellation, or failed-payment timestamp. Save a verified
+  key only in Windows Credential Manager and grant full Agent access only in
+  the current process after a successful live check. Migrate persisted v1
+  entitlement data to usage/ownership-only v2 and ignore its former paid
+  fields. Serialize access commands and discard superseded UI responses so a
+  later Forget always wins over an older startup refresh.
+- **Consequences:** YoreBot handles no card data, API secret, account, webhook,
+  or payment backend. Startup/offline/invalid checks fall back to Free Chat plus
+  2,000,000 Agent tokens/day. Other operating systems have no plaintext
+  credential fallback. Provider setup and real checkout remain human-owned,
+  unverified launch gates. Forget can wait for an in-flight verification's
+  bounded timeout, but its completed Free state cannot be reversed by that
+  older request.
+- **Owner:** team.
+- **Links:** [Issue #6](https://github.com/emv-dev/YoreBot/issues/6),
+  [`docs/GUMROAD_ACCESS.md`](docs/GUMROAD_ACCESS.md),
+  [`src-tauri/src/core/access.rs`](src-tauri/src/core/access.rs).
+
 ### 2026-08-29 — Prepare manual Azure-signed NSIS candidates without publishing
 - **Context:** D8 requires a Windows trust path, but YoreBot has no verified
   signing identity, configured GitHub environment, or authority to purchase a

@@ -9,8 +9,13 @@ import { TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { localStorageKey } from '@/constants/localStorage'
 import { route } from '@/constants/routes'
 import { useNavigate } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import YoreBotAboutDialog from '@/containers/dialogs/YoreBotAboutDialog'
+import YoreBotAccessDialog from '@/containers/dialogs/YoreBotAccessDialog'
+import {
+  EMPTY_YOREBOT_ACCESS_STATUS,
+  refreshSavedYoreBotAccess,
+} from '@/services/yorebot-access'
 
 import {
   Sidebar,
@@ -32,6 +37,29 @@ export function LeftSidebar() {
       localStorage.getItem(localStorageKey.agentModeAttentionSeen) !== 'true'
   )
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
+  const [accessStatus, setAccessStatus] = useState(
+    EMPTY_YOREBOT_ACCESS_STATUS
+  )
+  const accessRequestVersion = useRef(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const requestVersion = ++accessRequestVersion.current
+    void refreshSavedYoreBotAccess()
+      .then((status) => {
+        if (
+          !cancelled &&
+          accessRequestVersion.current === requestVersion
+        ) {
+          setAccessStatus(status)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const selectMode = (mode: SidebarMode) => {
     if (mode === 'agent' && !isAgentProviderSelected) return
@@ -70,20 +98,34 @@ export function LeftSidebar() {
           >
             <SidebarTrigger className="text-muted-foreground rounded-full hover:bg-sidebar-foreground/8! -mt-0.5 relative z-50 ml-0.5" />
           </div>
-          <button
-            type="button"
-            onClick={() => setAboutOpen(true)}
+          <div
             className={cn(
-              'mt-1 flex w-full items-center justify-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-sidebar-foreground/8',
+              'mt-1 flex w-full items-center gap-1 rounded-lg px-1 py-1',
               IS_MACOS && 'mt-3'
             )}
-            aria-label="About this AI"
           >
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-neutral-950 text-base font-semibold text-white shadow-sm dark:bg-white dark:text-neutral-950">
-              Y
-            </div>
-            <span className="text-base font-semibold tracking-tight">YoreBot</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => setAboutOpen(true)}
+              className="flex min-w-0 flex-1 items-center justify-start gap-2 rounded-lg px-1 text-left hover:bg-sidebar-foreground/8"
+              aria-label="About this AI"
+            >
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-neutral-950 text-base font-semibold text-white shadow-sm dark:bg-white dark:text-neutral-950">
+                Y
+              </div>
+              <span className="truncate text-base font-semibold tracking-tight">
+                YoreBot
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAccessOpen(true)}
+              className="shrink-0 rounded-full border px-2 py-1 text-xs font-medium hover:bg-sidebar-foreground/8"
+              aria-label={`Access: ${accessStatus.fullAccess ? 'Full' : 'Free'}`}
+            >
+              {accessStatus.fullAccess ? 'Full' : 'Free'}
+            </button>
+          </div>
           <div className="mt-[6px] px-1">
             <ChatAgentModeSwitch
               isAgentMode={sidebarMode === 'agent'}
@@ -103,6 +145,13 @@ export function LeftSidebar() {
         <SidebarRail />
       </Sidebar>
       <YoreBotAboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      <YoreBotAccessDialog
+        open={accessOpen}
+        onOpenChange={setAccessOpen}
+        status={accessStatus}
+        onStatusChange={setAccessStatus}
+        requestVersion={accessRequestVersion}
+      />
     </div>
   )
 }
