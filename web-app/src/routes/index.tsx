@@ -1,19 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createFileRoute, useSearch } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import ChatInput from '@/containers/ChatInput'
-import HeaderPage from '@/containers/HeaderPage'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useTools } from '@/hooks/useTools'
 import { cn } from '@/lib/utils'
 
 import { useModelProvider } from '@/hooks/useModelProvider'
-import SetupScreen from '@/containers/SetupScreen'
+import YoreBotSetupScreen from '@/containers/YoreBotSetupScreen'
 import { route } from '@/constants/routes'
-import { hasValidProviders } from '@/lib/onboarding'
 import { localStorageKey } from '@/constants/localStorage'
+import { YOREBOT_PINNED_MODELS } from '@/constants/yorebot-models'
 import { useCallback, useEffect, useState } from 'react'
 import { useThreads } from '@/hooks/useThreads'
-import DropdownModelProvider from '@/containers/DropdownModelProvider'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { usePrompt } from '@/hooks/usePrompt'
@@ -22,36 +20,14 @@ import { AgentWorkspaceLayout } from '@/containers/AgentWorkspaceLayout'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { resolveAgentWorkspaceRoot } from '@/services/agent/tauri'
 
-type ThreadModel = {
-  id: string
-  provider: string
-}
-
-type SearchParams = {
-  threadModel?: ThreadModel
-  agentSkill?: string
-}
-
 export const Route = createFileRoute(route.home as any)({
   component: Index,
-  validateSearch: (search: Record<string, unknown>): SearchParams => {
-    const result: SearchParams = {
-      threadModel: search.threadModel as ThreadModel | undefined,
-      agentSkill:
-        typeof search.agentSkill === 'string' ? search.agentSkill : undefined,
-    }
-
-    return result
-  },
 })
 
 function Index() {
   const { t } = useTranslation()
   const serviceHub = useServiceHub()
-  const { providers, selectedProvider } = useModelProvider()
-  const search = useSearch({ from: route.home as any })
-  const threadModel = search.threadModel
-  const agentSkill = search.agentSkill
+  const selectedProvider = useModelProvider((state) => state.selectedProvider)
   const { setCurrentThreadId } = useThreads()
   const isAgentMode = useAgentMode(
     (state) => state.agentThreads[TEMPORARY_CHAT_ID] === true
@@ -63,11 +39,15 @@ function Index() {
     (state) => state.workspaces[TEMPORARY_CHAT_ID]
   )
   const setPrompt = usePrompt((state) => state.setPrompt)
+  const [selectedAgentSkillName, setSelectedAgentSkillName] = useState<
+    string | undefined
+  >()
   useTools()
 
   const handleSelectAgentTask = useCallback(
-    (prompt: string) => {
+    (prompt: string, skillName: string) => {
       setPrompt(prompt)
+      setSelectedAgentSkillName(skillName)
       document
         .querySelector<HTMLTextAreaElement>('[data-testid="chat-input"]')
         ?.focus()
@@ -89,17 +69,21 @@ function Index() {
     })
   }, [serviceHub])
 
-  //* После Skip без перемонтирования роутера — поднимаем флаг, иначе ре-рендер не гарантирован
-  const [setupSkippedThisSession, setSetupSkippedThisSession] = useState(false)
-  const setupCompletedOrSkipped =
-    setupSkippedThisSession ||
-    (typeof window !== 'undefined' &&
-      localStorage.getItem(localStorageKey.setupCompleted) === 'true')
+  const readSetupCompleted = useCallback(() => {
+    if (typeof window === 'undefined') return false
+    const pinnedModel = localStorage.getItem(localStorageKey.yorebotPinnedModel)
+    return (
+      localStorage.getItem(localStorageKey.setupCompleted) === 'true' &&
+      YOREBOT_PINNED_MODELS.some((model) => model.id === pinnedModel)
+    )
+  }, [])
+  const [setupCompleted, setSetupCompleted] = useState(readSetupCompleted)
 
-  // Conditional to check if there are any valid providers: min 1 api_key or 1
-  // model in llama.cpp / jan, or a custom provider with models. Shared with the
-  // startup auto-start gate so the two can never disagree about onboarding.
-  const validProviders = hasValidProviders(providers)
+  useEffect(() => {
+    const refresh = () => setSetupCompleted(readSetupCompleted())
+    window.addEventListener('app:setup-completed', refresh)
+    return () => window.removeEventListener('app:setup-completed', refresh)
+  }, [readSetupCompleted])
 
   useEffect(() => {
     setCurrentThreadId(undefined)
@@ -115,8 +99,8 @@ function Index() {
   }, [selectedProvider, setAgentMode, setSidebarMode, sidebarMode])
 
   //* Dev-флаг FORCE_ONBOARDING — принудительный показ SetupScreen без удаления моделей
-  if (FORCE_ONBOARDING || (!validProviders && !setupCompletedOrSkipped)) {
-    return <SetupScreen onSkipped={() => setSetupSkippedThisSession(true)} />
+  if (FORCE_ONBOARDING || !setupCompleted) {
+    return <YoreBotSetupScreen />
   }
 
   return (
@@ -128,11 +112,6 @@ function Index() {
       refreshKey={0}
     >
       <div className="flex h-full w-full min-w-0 flex-col justify-center">
-        <HeaderPage>
-          <div className="flex items-center gap-2 w-full">
-            <DropdownModelProvider />
-          </div>
-        </HeaderPage>
         <div
           className={cn(
             'h-full overflow-y-auto inline-flex flex-col gap-2 justify-center px-3'
@@ -149,9 +128,8 @@ function Index() {
             <div className="flex-1 shrink-0">
               <ChatInput
                 showSpeedToken={false}
-                model={threadModel}
                 initialMessage={true}
-                preselectedAgentSkillName={agentSkill}
+                preselectedAgentSkillName={selectedAgentSkillName}
               />
             </div>
             <div className="absolute inset-x-0 top-full mx-auto w-full max-w-3xl">

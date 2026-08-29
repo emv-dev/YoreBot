@@ -309,6 +309,51 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-28 — Ship YoreBot as a fixed local appliance
+- **Context:** Issue #1 requires a weekend MVP that ordinary users can install
+  without choosing models, providers, runtimes, or technical settings.
+- **Decision:** Present only Chat and Do a task; route technical surfaces home;
+  select the largest fitting model from two immutable GGUF pins; permit only the
+  local upstream llama.cpp provider; pin Windows CPU/Vulkan runtime artifacts;
+  and disable inherited telemetry, updater, and public release wiring.
+- **Consequences:** Setup is automatic and reproducible. Unsupported hardware
+  fails closed. Internal Windows builds remain unsigned until YoreBot owns its
+  signing and updater keys.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`web-app/src/containers/YoreBotSetupScreen.tsx`](web-app/src/containers/YoreBotSetupScreen.tsx),
+  [`extensions/llamacpp-upstream-extension/src/backend.ts`](extensions/llamacpp-upstream-extension/src/backend.ts).
+
+### 2026-08-28 — Confine the MVP Agent to reversible Downloads organization
+- **Context:** The consumer Agent needs useful action without exposing Atomic's
+  broad tool, skill, network, shell, or provider surfaces.
+- **Decision:** Ship only the scriptless Downloads Organizer skill and its
+  confined local tools. Require one-time approval for every mutation, show the
+  exact consequential payload, deny without side effects, and implement move as
+  non-overwriting and reversible.
+- **Consequences:** The MVP cannot browse, upload, execute shell, load MCP, or
+  mutate outside its connected root. Users can review every filesystem change.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`src-tauri/src/core/agent/tools/mod.rs`](src-tauri/src/core/agent/tools/mod.rs),
+  [`src-tauri/resources/agent-skills/downloads-organizer/SKILL.md`](src-tauri/resources/agent-skills/downloads-organizer/SKILL.md).
+
+### 2026-08-28 — Meter only Agent usage through local entitlements
+- **Context:** Chat must remain free while Agent has a provider-neutral MVP
+  quota, trial, subscription, and permanent model-pack seam.
+- **Decision:** Never meter Chat. Persist Agent-only completion tokens by UTC
+  day; cap Agent at 2,000,000 tokens for free and permanent model-pack owners;
+  bypass that cap only for an explicitly started active seven-day trial or an
+  active subscription; and fail closed when the ledger is corrupt. Do not add a
+  commerce provider or network dependency.
+- **Consequences:** A completion may cross the boundary once, then the next
+  Agent step is blocked. Owned-model Chat remains unmetered, a trial never
+  starts implicitly, and commerce integration remains separately authorized.
+- **Owner:** team.
+- **Links:** [Issue #1](https://github.com/emv-dev/YoreBot/issues/1),
+  [`src-tauri/src/core/agent/entitlements.rs`](src-tauri/src/core/agent/entitlements.rs),
+  [`src-tauri/src/core/agent/runner.rs`](src-tauri/src/core/agent/runner.rs).
+
 ### 2026-07-24 — Let users revoke or downgrade Agent folder access
 - **Context:** Connected external Agent folders were permanently editable for
   the thread and had no management controls after being added.

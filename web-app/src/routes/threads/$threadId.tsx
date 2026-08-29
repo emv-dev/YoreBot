@@ -80,7 +80,6 @@ import { Button } from '@/components/ui/button'
 import { LinkifiedText } from '@/components/LinkifiedText'
 import { IconAlertCircle, IconRefresh } from '@tabler/icons-react'
 import { useToolApproval } from '@/hooks/useToolApproval'
-import DropdownModelProvider from '@/containers/DropdownModelProvider'
 import { ExtensionTypeEnum, VectorDBExtension } from '@janhq/core'
 import { ExtensionManager } from '@/lib/extension'
 import { Shimmer } from '@/components/ai-elements/shimmer'
@@ -870,8 +869,7 @@ function ThreadDetail() {
               path: root.path,
               can_edit: root.canEdit,
             })),
-            auto_approve:
-              useAgentMode.getState().getApprovalMode(threadId) === 'skip',
+            auto_approve: false,
           },
           applyAgentEvent
         )
@@ -1618,7 +1616,7 @@ function ThreadDetail() {
       <div className="flex flex-1 flex-col overflow-hidden min-w-0">
         <HeaderPage>
           <div className="flex items-center justify-between w-full pr-2">
-            <DropdownModelProvider />
+            <span className="text-sm font-medium">YoreBot</span>
           </div>
         </HeaderPage>
         <div className="flex flex-1 overflow-hidden">

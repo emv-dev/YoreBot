@@ -1,101 +1,26 @@
-import {
-  enable as enableAutostart,
-  isEnabled as isAutostartEnabled,
-} from '@tauri-apps/plugin-autostart'
-import { invoke } from '@tauri-apps/api/core'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { localStorageKey } from '@/constants/localStorage'
 import { EMBEDDING_MODEL_ID } from '@/constants/models'
 
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useEffect } from 'react'
-import { useMCPServers, DEFAULT_MCP_SETTINGS } from '@/hooks/useMCPServers'
 import { useAssistant, defaultAssistant } from '@/hooks/useAssistant'
-import { useNavigate } from '@tanstack/react-router'
-import { route } from '@/constants/routes'
 import { useThreads } from '@/hooks/useThreads'
-import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { useAppState } from '@/hooks/useAppState'
-import { useAppUpdater } from '@/hooks/useAppUpdater'
 import { switchToModel } from '@/utils/switchModel'
 import { useModelLoad } from '@/hooks/useModelLoad'
 import { consumeSilentImport } from '@/utils/backgroundImports'
-import {
-  isDev,
-  LOCAL_LLAMACPP_PROVIDER,
-  SERVER_START_WATCHDOG_MS,
-  withTimeout,
-} from '@/lib/utils'
+import { LOCAL_LLAMACPP_PROVIDER } from '@/lib/utils'
 import { AppEvent, events, ModelEvent } from '@janhq/core'
 import { toast } from 'sonner'
-import { SystemEvent } from '@/types/events'
-import {
-  parseAtomicChatDeepLink,
-  type AtomicChatDeepLinkTarget,
-} from '@/services/deeplink/parse'
-import {
-  isKeylessRemoteProvider,
-  isLocalProvider,
-  registerRemoteProvider,
-  unregisterRemoteProvider,
-} from '@/utils/registerRemoteProvider'
-import { hydrateActiveModelsForRunningServer } from '@/utils/activeModelsSync'
-
-const safeRegisterRemoteProvider = async (provider: ModelProvider) => {
-  try {
-    await registerRemoteProvider(provider)
-  } catch (error) {
-    console.error(`Failed to register provider ${provider.provider}:`, error)
-  }
-}
-
-// Track which providers have been registered so we can unregister stale ones
-let registeredProviderNames = new Set<string>()
-
-// Effect to sync remote providers when providers change
-const syncRemoteProviders = () => {
-  const providers = useModelProvider.getState().providers
-  const currentActive = new Set<string>()
-
-  providers.forEach((provider) => {
-    // Only cloud providers should be registered with the backend proxy. Local
-    // engines (`llamacpp`, `llamacpp-upstream`, `mlx`, `foundation-models`)
-    // run in-process and must never be treated as remote — see ADR
-    // 2026-05-19 *Ship upstream `ggml-org/llama.cpp` as a second macOS
-    // provider* / ADR 2026-05-22 *Windows ships only `llamacpp-upstream`*.
-    // The pre-fix check excluded only `'llamacpp'`, which silently leaked
-    // `'llamacpp-upstream'` into the remote-registration path on Windows.
-    if (
-      provider.active &&
-      !isLocalProvider(provider.provider) &&
-      (provider.api_key || isKeylessRemoteProvider(provider))
-    ) {
-      safeRegisterRemoteProvider(provider)
-      currentActive.add(provider.provider)
-    }
-  })
-
-  // Unregister providers that were previously registered but are now inactive/removed
-  for (const name of registeredProviderNames) {
-    if (!currentActive.has(name)) {
-      unregisterRemoteProvider(name)
-    }
-  }
-
-  registeredProviderNames = currentActive
-}
+import { isLocalProvider } from '@/utils/registerRemoteProvider'
 
 export function DataProvider() {
   const { setProviders } = useModelProvider()
 
-  const { setServers, setSettings } = useMCPServers()
   const { setAssistants, initializeWithLastUsed } = useAssistant()
   const { setThreads } = useThreads()
-  const navigate = useNavigate()
   const serviceHub = useServiceHub()
-  const { checkForUpdate } = useAppUpdater()
-
-  const setServerStatus = useAppState((state) => state.setServerStatus)
 
   useEffect(() => {
     if (localStorage.getItem(localStorageKey.factoryResetPending) === 'true') {
@@ -113,84 +38,22 @@ export function DataProvider() {
     }
   }, [])
 
-  // Default "Launch at startup" to ON for every user (new and existing). We
-  // seed the OS autostart entry exactly once and record it, so a later manual
-  // disable in Settings → General is never overridden. (Flips the ATO-96
-  // default from OFF to ON; users can still turn it off.)
-  useEffect(() => {
-    if (!IS_TAURI) return
-    if (localStorage.getItem(localStorageKey.autostartSeeded) === 'true') return
-    ;(async () => {
-      try {
-        if (!(await isAutostartEnabled())) {
-          await enableAutostart()
-        }
-        localStorage.setItem(localStorageKey.autostartSeeded, 'true')
-      } catch (error) {
-        console.error('Failed to seed launch-at-startup default:', error)
-      }
-    })()
-  }, [])
-
-  // macOS: migrate the autostart mechanism from the legacy LaunchAgent plist to
-  // a real AppleScript Login Item (visible in System Settings, reliably started
-  // on reboot). Runs once. The Rust side removes the stale plist and reports
-  // whether the user had launch-at-startup ON under the old launcher; if so we
-  // re-register a Login Item so it keeps working after the switch. A user who
-  // had it off has no legacy plist and is left untouched (choice preserved).
-  useEffect(() => {
-    if (!IS_TAURI || !IS_MACOS) return
-    if (
-      localStorage.getItem(localStorageKey.autostartAppleScriptMigrated) ===
-      'true'
-    )
-      return
-    ;(async () => {
-      try {
-        const hadLegacyAutostart = await invoke<boolean>(
-          'migrate_macos_autostart_launchagent'
-        )
-        if (hadLegacyAutostart && !(await isAutostartEnabled())) {
-          await enableAutostart()
-        }
-        localStorage.setItem(
-          localStorageKey.autostartAppleScriptMigrated,
-          'true'
-        )
-      } catch (error) {
-        console.error('Failed to migrate macOS autostart launcher:', error)
-      }
-    })()
-  }, [])
-
   useEffect(() => {
     console.log('Initializing DataProvider...')
     serviceHub
       .providers()
       .getProviders()
       .then((providers) => {
-        setProviders(providers)
-        // Register active remote providers with the backend
-        providers.forEach((provider) => {
-          if (provider.active) {
-            safeRegisterRemoteProvider(provider)
-            registeredProviderNames.add(provider.provider)
-          }
-        })
-      })
-    serviceHub
-      .mcp()
-      .getMCPConfig()
-      .then((data) => {
-        setServers(data.mcpServers ?? {})
-        setSettings(data.mcpSettings ?? DEFAULT_MCP_SETTINGS)
+        setProviders(
+          providers.filter((provider) => isLocalProvider(provider.provider))
+        )
       })
     serviceHub
       .assistants()
       .getAssistants()
       .then((data) => {
         if (data && Array.isArray(data) && data.length > 0) {
-          //? Миграция: ассистент с id 'jan' всегда подменяем на дефолт Atomic Chat (name/description/avatar)
+          // Keep the load-bearing legacy id while presenting YoreBot's default assistant.
           const migrated = (data as unknown as Assistant[]).map((a) =>
             a.id === 'jan'
               ? { ...defaultAssistant, id: 'jan', created_at: a.created_at }
@@ -203,23 +66,6 @@ export function DataProvider() {
       .catch((error) => {
         console.warn('Failed to load assistants, keeping default:', error)
       })
-    serviceHub.deeplink().getCurrent().then(handleDeepLink)
-    serviceHub.deeplink().onOpenUrl(handleDeepLink)
-
-    // Listen for deep link events
-    let unsubscribe = () => {}
-    serviceHub
-      .events()
-      .listen(SystemEvent.DEEP_LINK, (event) => {
-        const deep_link = event.payload as string
-        handleDeepLink([deep_link])
-      })
-      .then((unsub) => {
-        unsubscribe = unsub
-      })
-    return () => {
-      unsubscribe()
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceHub])
 
@@ -232,34 +78,17 @@ export function DataProvider() {
       })
   }, [serviceHub, setThreads])
 
-  // Sync remote providers with backend when providers change
-  const providers = useModelProvider.getState().providers
-  useEffect(() => {
-    syncRemoteProviders()
-  }, [providers])
-
-  useEffect(() => {
-    if (isDev()) {
-      return
-    }
-    checkForUpdate()
-    const intervalId = setInterval(() => {
-      console.log('Periodic update check triggered')
-      checkForUpdate()
-    }, Number(UPDATE_CHECK_INTERVAL_MS))
-    return () => {
-      clearInterval(intervalId)
-    }
-  }, [checkForUpdate])
-
   useEffect(() => {
     const handleModelImported = async (eventData?: Record<string, unknown>) => {
       console.log('[LocalAPI] onModelImported fired, eventData:', eventData)
 
       try {
         const fetchedProviders = await serviceHub.providers().getProviders()
-        setProviders(fetchedProviders)
-        syncRemoteProviders()
+        setProviders(
+          fetchedProviders.filter((provider) =>
+            isLocalProvider(provider.provider)
+          )
+        )
       } catch (err) {
         console.error(
           '[LocalAPI] Failed to refresh providers after model import:',
@@ -394,7 +223,7 @@ export function DataProvider() {
       events.off(AppEvent.onModelImported, handleModelImported)
       console.log('[LocalAPI] Unregistered onModelImported handler')
     }
-  }, [serviceHub, setProviders, setServerStatus])
+  }, [serviceHub, setProviders])
 
   // Mirror any auto-increase of ctx_len performed by a backend extension
   // (triggered by the Local API Server proxy detecting a context-limit error)
@@ -639,111 +468,6 @@ export function DataProvider() {
       if (unlistenSessionDied) unlistenSessionDied()
     }
   }, [])
-
-  // Auto-start Local API Server on app startup, but only re-attach to an
-  // already-running server or raise the proxy for a model that is already
-  // running in a local engine. We never proactively load/select a model here:
-  // if nothing is running, the server stays down until the user starts a model.
-  useEffect(() => {
-    const autoStartServer = async () => {
-      try {
-        const { enableOnStartup } = useLocalApiServer.getState()
-        if (!enableOnStartup) {
-          console.log(
-            '[LocalAPI:startup] Local API server auto-start disabled in settings; skipping auto-start'
-          )
-          return
-        }
-
-        const isRunning = await serviceHub.app().getServerStatus()
-        if (isRunning) {
-          console.log('[LocalAPI:startup] Server already running')
-          setServerStatus('running')
-          // `activeModels` is in-memory only; without this the provider UI
-          // would render "Start" for the cloud model the proxy is already
-          // routing, until the user manually re-selects it. See issue where
-          // navigating between tabs appears to "forget" the running model.
-          await hydrateActiveModelsForRunningServer(serviceHub.models())
-          return
-        }
-
-        // Product decision: do NOT proactively load or pick a model on startup.
-        // The Local API Server is only raised for a model that is already
-        // running in a local engine (llamacpp/mlx). If nothing is running, the
-        // server stays down until the user starts a model manually.
-        const runningModels = await serviceHub.models().getActiveModels()
-        if (!runningModels || runningModels.length === 0) {
-          console.log(
-            '[LocalAPI:startup] No model currently running; leaving server stopped'
-          )
-          return
-        }
-
-        const serverState = useLocalApiServer.getState()
-        setServerStatus('pending')
-        console.log(
-          '[LocalAPI:startup] Raising server for already-running model(s):',
-          runningModels
-        )
-        try {
-          // ATO-270: never let a stuck native invoke leave the UI on
-          // "Starting Server" forever.
-          const startServerCall = window.core?.api?.startServer({
-            host: serverState.serverHost,
-            port: serverState.serverPort,
-            prefix: serverState.apiPrefix,
-            apiKey: serverState.apiKey,
-            trustedHosts: serverState.trustedHosts,
-            isCorsEnabled: serverState.corsEnabled,
-            isVerboseEnabled: serverState.verboseLogs,
-            proxyTimeout: serverState.proxyTimeout,
-          }) as Promise<number> | undefined
-          const actualPort = startServerCall
-            ? await withTimeout(
-                startServerCall,
-                SERVER_START_WATCHDOG_MS,
-                'Timed out waiting for the Local API Server to start.'
-              )
-            : undefined
-          if (actualPort && actualPort !== serverState.serverPort) {
-            serverState.setServerPort(actualPort)
-          }
-          await hydrateActiveModelsForRunningServer(serviceHub.models())
-          setServerStatus('running')
-        } catch (err) {
-          console.error('[LocalAPI:startup] Server start failed:', err)
-          setServerStatus('stopped')
-        }
-      } catch (error) {
-        console.error('[LocalAPI:startup] Failed to auto-start server:', error)
-        setServerStatus('stopped')
-      }
-    }
-
-    autoStartServer()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serviceHub])
-
-  const handleDeepLink = (urls: string[] | null) => {
-    if (!urls?.length) return
-    console.log('Received deeplink:', urls)
-    const target = urls
-      .map(parseAtomicChatDeepLink)
-      .find((value): value is AtomicChatDeepLinkTarget => value !== null)
-    if (!target) {
-      return
-    }
-
-    navigate({
-      to: route.hub.model,
-      params: {
-        modelId: target.modelId,
-      },
-      search: {
-        repo: target.repo,
-      },
-    })
-  }
 
   return null
 }

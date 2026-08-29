@@ -3,19 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { parseAtomicChatDeepLink } from './parse'
 
 describe('parseAtomicChatDeepLink', () => {
-  it('parses a Hugging Face model deeplink', () => {
+  it('rejects YoreBot model import links', () => {
     expect(
       parseAtomicChatDeepLink(
-        'atomic-chat://models/huggingface/owner/model-GGUF'
+        'yorebot://models/huggingface/owner/model-GGUF'
       )
-    ).toEqual({
-      provider: 'huggingface',
-      repo: 'owner/model-GGUF',
-      modelId: 'owner/model-GGUF',
-    })
+    ).toBeNull()
   })
 
-  it('rejects non Atomic Chat schemes', () => {
+  it('rejects non-YoreBot schemes', () => {
     expect(
       parseAtomicChatDeepLink('jan://models/huggingface/owner/model-GGUF')
     ).toBeNull()
@@ -23,7 +19,7 @@ describe('parseAtomicChatDeepLink', () => {
 
   it('rejects incomplete Hugging Face paths', () => {
     expect(
-      parseAtomicChatDeepLink('atomic-chat://models/huggingface/owner')
+      parseAtomicChatDeepLink('yorebot://models/huggingface/owner')
     ).toBeNull()
   })
 })

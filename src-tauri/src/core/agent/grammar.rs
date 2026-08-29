@@ -16,8 +16,8 @@ use std::fmt::Write;
 
 use super::{
     model_profile::AgentModelProfile,
-    prompt::{ToolTier, ITERATION_ONE_TOOLS},
-    skills::SkillRegistry,
+    prompt::{ToolTier, ITERATION_ONE_TOOLS, UPSTREAM_TOOL_DESCRIPTORS},
+    skills::{SkillRegistry, YOREBOT_STARTER_SKILLS},
 };
 
 struct ToolGrammar {
@@ -71,6 +71,11 @@ const STATIC_TOOL_GRAMMARS: &[ToolGrammar] = &[
         name: "os.fs.mkdir",
         rule: "fs-mkdir",
         args: r#""{" ws "\"path\"" ws ":" ws non-empty-string ( ws "," ws "\"recursive\"" ws ":" ws boolean )? ws "}""#,
+    },
+    ToolGrammar {
+        name: "os.fs.move",
+        rule: "fs-move",
+        args: r#""{" ws "\"source\"" ws ":" ws non-empty-string ws "," ws "\"destination\"" ws ":" ws non-empty-string ws "}""#,
     },
     ToolGrammar {
         name: "os.fs.trash",
@@ -229,7 +234,8 @@ ws ::= [ \t\n\r]*
 ///
 /// This list must stay in sync with `ITERATION_ONE_TOOLS` in `prompt.rs`; the
 /// `grammar_covers_every_iteration_one_tool` test enforces the invariant.
-pub const GRAMMAR_TOOL_NAMES: &[&str] = &[
+#[allow(dead_code)]
+const UPSTREAM_GRAMMAR_TOOL_NAMES: &[&str] = &[
     "tool.view",
     "skill.view",
     "skill.run_script",
@@ -241,6 +247,7 @@ pub const GRAMMAR_TOOL_NAMES: &[&str] = &[
     "os.fs.read",
     "os.fs.write",
     "os.fs.mkdir",
+    "os.fs.move",
     "os.fs.trash",
     "os.fs.list",
     "os.fs.grep",
@@ -268,6 +275,16 @@ pub const GRAMMAR_TOOL_NAMES: &[&str] = &[
     "finish",
 ];
 
+pub const GRAMMAR_TOOL_NAMES: &[&str] = &[
+    "skill.view",
+    "os.fs.mkdir",
+    "os.fs.move",
+    "os.fs.list",
+    "os.fs.glob",
+    "reply",
+    "finish",
+];
+
 /// Build the tool-call grammar from the fixed tool catalog and the enabled,
 /// compatible skill registry visible to this turn.
 pub fn tool_call_grammar(skill_registry: &SkillRegistry) -> String {
@@ -278,17 +295,50 @@ pub fn tool_call_grammar_for_profile(
     skill_registry: &SkillRegistry,
     profile: AgentModelProfile,
 ) -> String {
+    tool_call_grammar_for_catalog(skill_registry, profile, true)
+}
+
+pub(crate) fn tool_call_grammar_for_catalog(
+    skill_registry: &SkillRegistry,
+    profile: AgentModelProfile,
+    restrict_to_yorebot_catalog: bool,
+) -> String {
     let skill_names = skill_registry
         .enabled()
+        .filter(|record| {
+            !restrict_to_yorebot_catalog
+                || YOREBOT_STARTER_SKILLS.contains(&record.manifest.name.as_str())
+        })
         .map(|record| record.manifest.name.as_str())
         .collect::<Vec<_>>();
-    let mut call_rules = STATIC_TOOL_GRAMMARS
+    let tool_descriptors = if restrict_to_yorebot_catalog {
+        ITERATION_ONE_TOOLS
+    } else {
+        UPSTREAM_TOOL_DESCRIPTORS
+    };
+    let active_static = STATIC_TOOL_GRAMMARS
+        .iter()
+        .filter(|grammar| {
+            tool_descriptors
+                .iter()
+                .any(|descriptor| descriptor.name == grammar.name)
+        })
+        .collect::<Vec<_>>();
+    let mut call_rules = active_static
         .iter()
         .map(|grammar| format!("{}-call", grammar.rule))
         .collect::<Vec<_>>();
-    if !skill_names.is_empty() {
+    let skill_view_enabled = tool_descriptors
+        .iter()
+        .any(|descriptor| descriptor.name == "skill.view");
+    let skill_script_enabled = tool_descriptors
+        .iter()
+        .any(|descriptor| descriptor.name == "skill.run_script");
+    if !skill_names.is_empty() && skill_view_enabled {
         call_rules.insert(1, "skill-view-call".into());
-        call_rules.insert(2, "skill-run-script-call".into());
+    }
+    if !skill_names.is_empty() && skill_script_enabled {
+        call_rules.insert(1, "skill-run-script-call".into());
     }
 
     let root = if profile == AgentModelProfile::Gemma4Think {
@@ -300,7 +350,7 @@ pub fn tool_call_grammar_for_profile(
         "root ::= {root}\ntool-call ::= {}\n",
         call_rules.join(" | ")
     );
-    for tool in STATIC_TOOL_GRAMMARS {
+    for tool in active_static {
         writeln!(
             grammar,
             "{}-call ::= call-prefix {} args-prefix {}-args call-suffix",
@@ -314,12 +364,18 @@ pub fn tool_call_grammar_for_profile(
     }
 
     if !skill_names.is_empty() {
-        grammar.push_str(
-            "skill-view-call ::= call-prefix \"\\\"skill.view\\\"\" args-prefix skill-view-args call-suffix\n\
-             skill-view-args ::= \"{\" ws \"\\\"name\\\"\" ws \":\" ws skill-name ws \"}\"\n\
-             skill-run-script-call ::= call-prefix \"\\\"skill.run_script\\\"\" args-prefix skill-run-script-args call-suffix\n\
-             skill-run-script-args ::= \"{\" ws \"\\\"skill\\\"\" ws \":\" ws skill-name ws \",\" ws \"\\\"script\\\"\" ws \":\" ws non-empty-string ( ws \",\" ws \"\\\"args\\\"\" ws \":\" ws string-array )? ( ws \",\" ws \"\\\"timeout_ms\\\"\" ws \":\" ws positive-integer )? ws \"}\"\n",
-        );
+        if skill_view_enabled {
+            grammar.push_str(
+                "skill-view-call ::= call-prefix \"\\\"skill.view\\\"\" args-prefix skill-view-args call-suffix\n\
+                 skill-view-args ::= \"{\" ws \"\\\"name\\\"\" ws \":\" ws skill-name ws \"}\"\n",
+            );
+        }
+        if skill_script_enabled {
+            grammar.push_str(
+                "skill-run-script-call ::= call-prefix \"\\\"skill.run_script\\\"\" args-prefix skill-run-script-args call-suffix\n\
+                 skill-run-script-args ::= \"{\" ws \"\\\"skill\\\"\" ws \":\" ws skill-name ws \",\" ws \"\\\"script\\\"\" ws \":\" ws non-empty-string ( ws \",\" ws \"\\\"args\\\"\" ws \":\" ws string-array )? ( ws \",\" ws \"\\\"timeout_ms\\\"\" ws \":\" ws positive-integer )? ws \"}\"\n",
+            );
+        }
         writeln!(
             grammar,
             "skill-name ::= {}",
@@ -332,17 +388,19 @@ pub fn tool_call_grammar_for_profile(
         .expect("writing skill grammar to String cannot fail");
     }
 
-    let rare_tool_names = ITERATION_ONE_TOOLS
+    let rare_tool_names = tool_descriptors
         .iter()
         .filter(|descriptor| descriptor.tier == ToolTier::Rare)
         .map(|descriptor| gbnf_json_literal(descriptor.name))
         .collect::<Vec<_>>();
-    writeln!(
-        grammar,
-        "rare-tool-name ::= {}",
-        rare_tool_names.join(" | ")
-    )
-    .expect("writing rare tool grammar to String cannot fail");
+    if !rare_tool_names.is_empty() {
+        writeln!(
+            grammar,
+            "rare-tool-name ::= {}",
+            rare_tool_names.join(" | ")
+        )
+        .expect("writing rare tool grammar to String cannot fail");
+    }
     grammar.push_str(JSON_RULES);
     if let (Some(open), Some(close)) = (profile.reasoning_open_tag(), profile.reasoning_close_tag())
     {
@@ -459,8 +517,9 @@ mod tests {
 
     #[test]
     fn excluded_categories_absent() {
-        let grammar = grammar_with_skills(&[]);
-        // No deferred tool families leak into the iteration-1 grammar.
+        let grammar = grammar_with_skills(&["downloads-organizer", "custom"]);
+        // No network, shell, cloud, MCP, or unrelated local mutation leaks
+        // into the model-visible product grammar.
         for excluded in [
             "browser-tool",
             "memory-tool",
@@ -472,6 +531,16 @@ mod tests {
             "memory.",
             "tasks.",
             "mcp.",
+            "os.web",
+            "os.http",
+            "os.shell",
+            "os.fs.write",
+            "os.fs.trash",
+            "os.fs.patch",
+            "os.clipboard",
+            "os.notify",
+            "skill.run_script",
+            "custom",
         ] {
             assert!(
                 !grammar.contains(excluded),
@@ -503,7 +572,7 @@ mod tests {
 
     #[test]
     fn every_os_tool_name_appears_in_the_os_rule() {
-        let grammar = grammar_with_skills(&["pdf"]);
+        let grammar = grammar_with_skills(&["downloads-organizer"]);
         for name in GRAMMAR_TOOL_NAMES {
             assert!(
                 grammar.contains(&gbnf_json_literal(name)),
@@ -515,7 +584,11 @@ mod tests {
     #[test]
     fn emits_every_static_tool_with_its_exact_argument_rule() {
         let grammar = grammar_with_skills(&[]);
-        for tool in STATIC_TOOL_GRAMMARS {
+        for tool in STATIC_TOOL_GRAMMARS.iter().filter(|tool| {
+            ITERATION_ONE_TOOLS
+                .iter()
+                .any(|descriptor| descriptor.name == tool.name)
+        }) {
             assert!(grammar.contains(&format!(
                 "{}-call ::= call-prefix {} args-prefix {}-args call-suffix",
                 tool.rule,
@@ -531,12 +604,11 @@ mod tests {
     }
 
     #[test]
-    fn more_specific_names_precede_their_prefixes() {
+    fn mutation_tools_precede_reads_and_terminals() {
         let grammar = grammar_with_skills(&[]);
         let idx = |needle: &str| grammar.find(needle).unwrap_or(usize::MAX);
-        assert!(idx(r#""\"os.fs.read_document\"""#) < idx(r#""\"os.fs.read\"""#));
-        assert!(idx(r#""\"os.fs.archive.list\"""#) < idx(r#""\"os.fs.list\"""#));
-        assert!(idx(r#""\"os.fs.archive.read_entry\"""#) < idx(r#""\"os.fs.read\"""#));
+        assert!(idx(r#""\"os.fs.mkdir\"""#) < idx(r#""\"os.fs.list\"""#));
+        assert!(idx(r#""\"os.fs.move\"""#) < idx(r#""\"reply\"""#));
     }
 
     #[test]
@@ -561,11 +633,11 @@ mod tests {
     }
 
     #[test]
-    fn enumerates_only_enabled_skills_and_rare_tools() {
-        let grammar = grammar_with_skills(&["pdf", "web-research"]);
-        assert!(grammar.contains(r#"skill-name ::= "\"pdf\"" | "\"web-research\"""#));
-        assert!(grammar.contains(r#""\"os.fs.hash\"""#));
-        assert!(!grammar.contains(r#""\"os.fs.read\"" |"#));
+    fn enumerates_only_the_enabled_yorebot_skill() {
+        let grammar = grammar_with_skills(&["downloads-organizer", "web-research"]);
+        assert!(grammar.contains(r#"skill-name ::= "\"downloads-organizer\"""#));
+        assert!(!grammar.contains("web-research"));
+        assert!(!grammar.contains("rare-tool-name ::="));
     }
 
     #[test]
@@ -578,12 +650,11 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_has_an_exact_non_empty_url_schema() {
+    fn no_generic_or_network_escape_hatch_is_emitted() {
         let grammar = grammar_with_skills(&[]);
-        assert!(
-            grammar.contains(r#"web-fetch-args ::= "{" ws "\"url\"" ws ":" ws non-empty-string"#)
-        );
-        assert!(!grammar.contains(r#""\"cmd\"" ws ":" ws "\"os.web.fetch\"""#));
+        assert!(!grammar.contains("web-fetch-args"));
+        assert!(!grammar.contains("os.web.fetch"));
+        assert!(!grammar.contains("os.http.request"));
         assert!(!grammar.contains(r#""\"\"" ws ":""#));
         assert!(!grammar.contains("generic-tool-call"));
         assert!(!grammar.contains("pair ::="));

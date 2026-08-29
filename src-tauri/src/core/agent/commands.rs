@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::approval::ApprovalGate;
 use super::attachments::stage_attachments;
+use super::entitlements::LocalEntitlementGate;
 use super::folder_access::FolderAccessGate;
 use super::llm_client::{
     find_session_by_model_and_backend, find_session_by_model_id, ContextExpansionHook,
@@ -439,6 +440,9 @@ pub async fn agent_run_turn<R: Runtime>(
     let bundled_script_runtime = resolve_bundled_script_runtime(&app_handle);
     let skill_descriptors = skill_registry
         .enabled()
+        .filter(|record| {
+            super::skills::YOREBOT_STARTER_SKILLS.contains(&record.manifest.name.as_str())
+        })
         .map(|record| SkillDescriptor {
             name: record.manifest.name.clone(),
             description: record.manifest.description.clone(),
@@ -491,6 +495,11 @@ pub async fn agent_run_turn<R: Runtime>(
     let desktop = AgentDesktopServices {
         app_handle: app_handle.clone(),
     };
+    let quota = LocalEntitlementGate::new(
+        state.agent_entitlements.clone(),
+        &data_folder,
+        request.model_id.clone(),
+    );
     let session_lock = get_session_lock(&state.agent_session_locks, &request.session_id).await;
     let result = {
         let _session_guard = session_lock.lock().await;
@@ -517,6 +526,8 @@ pub async fn agent_run_turn<R: Runtime>(
                         session: &mut session,
                         skill_registry: &skill_registry,
                         bundled_script_runtime: bundled_script_runtime.as_deref(),
+                        quota: Some(&quota),
+                        restrict_to_yorebot_catalog: true,
                     },
                     |event| on_event.send(event).map_err(|error| error.to_string()),
                 )
@@ -593,27 +604,15 @@ pub async fn agent_resolve_approval(
     state: State<'_, AppState>,
     decision: AgentApprovalDecision,
 ) -> Result<(), String> {
+    if decision.decision == ApprovalDecision::AlwaysAllow {
+        return Err("YoreBot permits only deny or approve once".into());
+    }
     let pending = state
         .agent_pending_approvals
         .lock()
         .await
         .remove(&decision.approval_id)
         .ok_or_else(|| format!("Approval '{}' is not pending", decision.approval_id))?;
-    if decision.decision == ApprovalDecision::AlwaysAllow {
-        if !pending.can_remember {
-            let _ = pending.sender.send(ApprovalDecision::Deny);
-            return Err("This Agent action cannot be remembered".into());
-        }
-        if let Err(error) = state
-            .agent_approval_allowlist
-            .lock()
-            .await
-            .insert(pending.fingerprint.clone())
-        {
-            let _ = pending.sender.send(ApprovalDecision::Deny);
-            return Err(error);
-        }
-    }
     pending
         .sender
         .send(decision.decision)

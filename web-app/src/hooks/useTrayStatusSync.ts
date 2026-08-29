@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { useShallow } from 'zustand/react/shallow'
 
 import { useAppState } from '@/hooks/useAppState'
@@ -36,10 +35,8 @@ const TRAY_REFRESH_MS = 5000
  * Push live status into the desktop system tray every 5 s.
  *
  * The backing Rust command ({@link ../../../src-tauri/src/core/tray_status.rs `update_tray_status`})
- * is a no-op when the tray was never installed (desktop builds without the
- * `ENABLE_SYSTEM_TRAY_ICON` env gate), so this hook is safe to mount unconditionally
- * inside Tauri — but we still short-circuit on web, mobile, and Linux to avoid
- * unnecessary IPC chatter.
+ * is a no-op when the tray was never installed, but the YoreBot MVP still
+ * short-circuits everywhere except macOS to avoid unnecessary IPC chatter.
  */
 export function useTrayStatusSync(): void {
   const { serverStatus, activeModels } = useAppState(
@@ -61,7 +58,7 @@ export function useTrayStatusSync(): void {
   latest.current = { serverStatus, activeModels, serverPort, apiPrefix }
 
   useEffect(() => {
-    if (!IS_TAURI || !(IS_MACOS || IS_WINDOWS)) return
+    if (!IS_TAURI || !IS_MACOS) return
 
     let cancelled = false
 
@@ -122,83 +119,4 @@ export function useTrayStatusSync(): void {
     // transitions (server start/stop, model switch) without waiting up to 5 s.
   }, [serverStatus, activeModels, serverPort, apiPrefix])
 
-  // Listen for "Stop Server" / "Start Server" clicks dispatched from the
-  // desktop tray menu. Centralising the dispatch here (instead of calling the
-  // proxy directly from Rust) keeps `serverStatus` in the React store in
-  // sync with the actual server state without having to push state changes
-  // back from Rust, and reuses the same `startServer` / `stopServer` service
-  // calls the Local API Server settings page already uses.
-  //
-  // Note: the start path here mirrors `local-api-server.tsx` minus the
-  // `ensureModelForServer(...)` step. Auto-loading a default model from a
-  // tray-only context would surface UI (toasts, error dialogs) that the user
-  // can't see without opening the app first; the assumption is that anyone
-  // toggling the server from the tray has already configured a model. If
-  // start fails because no model is loaded the frontend will surface the
-  // error the next time the user opens the app.
-  useEffect(() => {
-    if (!IS_TAURI || !(IS_MACOS || IS_WINDOWS)) return
-    const unlisteners: Array<() => void> = []
-    let cancelled = false
-    const register = (
-      promise: Promise<() => void>
-    ): void => {
-      promise.then((fn) => {
-        if (cancelled) fn()
-        else unlisteners.push(fn)
-      })
-    }
-
-    register(
-      listen<unknown>('tray-stop-server', () => {
-        const { setServerStatus } = useAppState.getState()
-        setServerStatus('pending')
-        window.core?.api
-          ?.stopServer()
-          .then(() => setServerStatus('stopped'))
-          .catch((error: unknown) => {
-            console.error('[tray] stop server failed', error)
-            // Reset to stopped so the tray button doesn't get stuck in a
-            // permanently-pending state if teardown errored partway through.
-            setServerStatus('stopped')
-          })
-      })
-    )
-
-    register(
-      listen<unknown>('tray-start-server', () => {
-        const { setServerStatus } = useAppState.getState()
-        const cfg = useLocalApiServer.getState()
-        setServerStatus('pending')
-        window.core?.api
-          ?.startServer({
-            host: cfg.serverHost,
-            port: cfg.serverPort,
-            prefix: cfg.apiPrefix,
-            apiKey: cfg.apiKey,
-            trustedHosts: cfg.trustedHosts,
-            isCorsEnabled: cfg.corsEnabled,
-            isVerboseEnabled: cfg.verboseLogs,
-            proxyTimeout: cfg.proxyTimeout,
-          })
-          .then((actualPort: number) => {
-            // Mobile uses port 0 (auto-assign) so persist whatever port the
-            // proxy actually bound to — same handling as the settings page.
-            if (actualPort && actualPort !== cfg.serverPort) {
-              useLocalApiServer.getState().setServerPort(actualPort)
-            }
-            setServerStatus('running')
-          })
-          .catch((error: unknown) => {
-            console.error('[tray] start server failed', error)
-            setServerStatus('stopped')
-          })
-      })
-    )
-
-    return () => {
-      cancelled = true
-      unlisteners.forEach((fn) => fn())
-    }
-  }, [])
 }

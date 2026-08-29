@@ -47,6 +47,9 @@ type Model = {
   missing?: boolean
   // Resolved absolute weights path; used to dedupe scan candidates vs imported models.
   path?: string
+  model_path?: string
+  model_sha256?: string
+  model_size_bytes?: number
 }
 
 /**

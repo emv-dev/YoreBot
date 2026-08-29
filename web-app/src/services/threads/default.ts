@@ -153,7 +153,7 @@ export class DefaultThreadsService implements ThreadsService {
               engine: thread.model?.provider ?? LOCAL_LLAMACPP_PROVIDER,
             },
             id: 'jan',
-            name: 'Atomic Chat',
+            name: 'YoreBot',
           },
         ],
         metadata: {

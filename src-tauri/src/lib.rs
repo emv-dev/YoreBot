@@ -34,18 +34,6 @@ pub fn run() {
           println!("a new app instance was opened with {argv:?} and the deep link event was already triggered");
           // when defining deep link schemes at runtime, you must also check `argv` here
         }));
-        // Launch-at-startup (ATO-96). Registered after single-instance, as the
-        // autostart plugin requires. AppleScript mode on macOS registers a real
-        // Login Item (visible in System Settings, started by loginwindow on
-        // reboot) instead of a launchd LaunchAgent plist that doesn't show under
-        // "Open at Login" and can point at a stale binary path. Trade-off: a
-        // one-time automation-permission prompt. No launch args: hidden/tray
-        // start is out of scope.
-        builder = builder.plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::AppleScript,
-            None,
-        ));
-
         builder = builder.plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -137,7 +125,6 @@ pub fn run() {
         core::system::commands::check_jan_cli_installed,
         core::system::commands::install_jan_cli,
         core::system::commands::uninstall_jan_cli,
-        core::system::commands::migrate_macos_autostart_launchagent,
         core::system::commands::clear_claude_code_env,
         core::system::commands::configure_hermes_agent,
         core::system::commands::clear_hermes_agent_config,
@@ -278,7 +265,6 @@ pub fn run() {
         core::system::commands::check_jan_cli_installed,
         core::system::commands::install_jan_cli,
         core::system::commands::uninstall_jan_cli,
-        core::system::commands::migrate_macos_autostart_launchagent,
         core::system::commands::clear_claude_code_env,
         core::system::commands::configure_hermes_agent,
         core::system::commands::clear_hermes_agent_config,
@@ -374,6 +360,7 @@ pub fn run() {
             agent_pending_approvals: Arc::new(Mutex::new(HashMap::new())),
             agent_pending_folder_access: Arc::new(Mutex::new(HashMap::new())),
             agent_approval_allowlist: Arc::new(Mutex::new(Default::default())),
+            agent_entitlements: Arc::new(Mutex::new(Default::default())),
             agent_session_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_settings: Arc::new(Mutex::new(McpSettings::default())),
             mcp_shutdown_in_progress: Arc::new(Mutex::new(false)),
@@ -398,20 +385,6 @@ pub fn run() {
                     }),
                 ]);
 
-            // ATO-113: on desktop, chain the plugin's logger through Sentry's
-            // SentryLogger so `log::error!` becomes a Sentry event (info/warn ->
-            // breadcrumbs) while stdout / webview / `app.log` still work. We use
-            // `split` (instead of `build`) so we, not the plugin, install the
-            // global logger. Mobile keeps the plain plugin logger (no Sentry).
-            #[cfg(not(any(target_os = "ios", target_os = "android")))]
-            {
-                let (plugin, max_level, logger) = log_builder.split(app.handle())?;
-                let _ = log::set_boxed_logger(crate::core::telemetry::wrap_logger(logger));
-                log::set_max_level(max_level);
-                app.handle().plugin(plugin)?;
-                crate::core::telemetry::set_log_path(log_dir.join("app.log"));
-            }
-            #[cfg(any(target_os = "ios", target_os = "android"))]
             app.handle().plugin(log_builder.build())?;
 
             // Reap backend processes orphaned by a previous *abnormal* exit
@@ -425,8 +398,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             {
                 if let Err(e) = crate::core::notifications::ensure_aumid_registered(
-                    "chat.atomic.app",
-                    "Atomic Chat",
+                    "app.yorebot.desktop",
+                    "YoreBot",
                 ) {
                     log::warn!("Failed to register AUMID for toast notifications: {e}");
                 }
@@ -517,18 +490,10 @@ pub fn run() {
             store.save().expect("Failed to save store");
             // Migration completed
 
-            // Tray icon: always on for macOS (matches menu-bar product conventions);
-            // env-gated on Windows/Linux where design polish is deferred.
+            // Keep the menu-bar status surface macOS-only for the YoreBot MVP.
             #[cfg(target_os = "macos")]
             {
                 log::info!("Enabling system tray icon (macOS)");
-                if let Err(e) = setup::setup_tray(app) {
-                    log::warn!("Failed to set up system tray: {e}");
-                }
-            }
-            #[cfg(all(desktop, not(target_os = "macos")))]
-            if option_env!("ENABLE_SYSTEM_TRAY_ICON").unwrap_or("false") == "true" {
-                log::info!("Enabling system tray icon");
                 if let Err(e) = setup::setup_tray(app) {
                     log::warn!("Failed to set up system tray: {e}");
                 }
@@ -551,9 +516,6 @@ pub fn run() {
                 });
             }
 
-            setup_mcp(app);
-            #[cfg(desktop)]
-            setup::setup_jan_cli(app.handle().clone(), stored_version != app_version);
             setup::setup_theme_listener(app)?;
             Ok(())
         })

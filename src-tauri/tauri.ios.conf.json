@@ -1,5 +1,5 @@
 {
-  "identifier": "jan.ai.app.ios",
+  "identifier": "app.yorebot.ios",
   "build": {
     "devUrl": null,
     "frontendDist": "../web-app/dist",
@@ -20,7 +20,7 @@
     "resources": [
       "resources/pre-install/**/*",
       "resources/LICENSE",
-      "resources/agent-skills/**/*"
+      "resources/agent-skills/downloads-organizer/**/*"
     ],
     "externalBin": []
   }

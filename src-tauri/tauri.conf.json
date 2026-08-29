@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Atomic Chat",
+  "productName": "YoreBot",
   "version": "2.0.0",
-  "identifier": "chat.atomic.app",
+  "identifier": "app.yorebot.desktop",
   "build": {
     "frontendDist": "../web-app/dist",
     "devUrl": "http://localhost:1420",
@@ -29,7 +29,7 @@
         "frame-src": "'self' blob: data: artifact: http://artifact.localhost",
         "child-src": "'self' blob: data: artifact: http://artifact.localhost",
         "style-src": "'unsafe-inline' 'self' https://fonts.googleapis.com",
-        "script-src": "'self' 'unsafe-eval' asset: $APPDATA/**.* http://asset.localhost https://eu-assets.i.posthog.com https://posthog.com"
+        "script-src": "'self' 'unsafe-eval' asset: $APPDATA/**.* http://asset.localhost"
       },
       "assetProtocol": {
         "enable": true,
@@ -44,19 +44,10 @@
     "os": {
       "version": "latest",
       "resolve": true
-    },
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2QzBERDIyODEyNTc2RDcKUldUWGRpV0JJdDNBaGdkQXBhUEk1ZzJQMDJQWC9DK1I3QVNuZmhDaWFvUDlxVklpdWRlMHRkTzEK",
-      "endpoints": [
-        "https://github.com/AtomicBot-ai/Atomic-Chat/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
     }
   },
   "bundle": {
-    "publisher": "Spaceship Intelligence",
+    "publisher": "YoreBot",
     "active": true,
     "createUpdaterArtifacts": false,
     "icon": [
@@ -68,7 +59,7 @@
     ],
     "resources": [
       "resources/LICENSE",
-      "resources/agent-skills/**/*",
+      "resources/agent-skills/downloads-organizer/**/*",
       "resources/llamacpp-backend/"
     ],
     "windows": {

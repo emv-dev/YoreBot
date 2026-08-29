@@ -1,9 +1,4 @@
-import {
-  FolderSearch,
-  HardDrive,
-  Newspaper,
-  type LucideIcon,
-} from 'lucide-react'
+import { FolderCog, type LucideIcon } from 'lucide-react'
 import { AGENT_TASK_SUGGESTIONS } from '@/constants/agent-task-suggestions'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
@@ -11,14 +6,12 @@ const TASK_ICONS: Record<
   (typeof AGENT_TASK_SUGGESTIONS)[number]['id'],
   LucideIcon
 > = {
-  findLatestNews: Newspaper,
-  inspectFolder: FolderSearch,
-  findLargeFiles: HardDrive,
+  organizeDownloads: FolderCog,
 }
 
 type AgentTaskSuggestionsProps = {
   visible: boolean
-  onSelect: (prompt: string) => void
+  onSelect: (prompt: string, skillName: string) => void
 }
 
 export function AgentTaskSuggestions({
@@ -45,7 +38,7 @@ export function AgentTaskSuggestions({
             <button
               key={task.id}
               type="button"
-              onClick={() => onSelect(t(task.promptKey))}
+              onClick={() => onSelect(t(task.promptKey), task.skillName)}
               className="group flex min-w-0 cursor-pointer items-center gap-3 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/80 text-muted-foreground/80">

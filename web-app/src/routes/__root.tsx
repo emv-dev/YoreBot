@@ -1,9 +1,6 @@
-import { createRootRoute, Outlet } from '@tanstack/react-router'
+import { createRootRoute, Outlet, redirect } from '@tanstack/react-router'
 // import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 
-import DialogAppUpdater from '@/containers/dialogs/AppUpdater'
-import BackendUpdater from '@/containers/dialogs/BackendUpdater'
-import TurboquantOptimalBackendDialog from '@/containers/dialogs/TurboquantOptimalBackendDialog'
 import { Fragment } from 'react/jsx-runtime'
 import { ThemeProvider } from '@/providers/ThemeProvider'
 import { InterfaceProvider } from '@/providers/InterfaceProvider'
@@ -14,9 +11,6 @@ import { ExtensionProvider } from '@/providers/ExtensionProvider'
 import { ToasterProvider } from '@/providers/ToasterProvider'
 // import { useAnalytic } from '@/hooks/useAnalytic'
 // import { PromptAnalytic } from '@/containers/analytics/PromptAnalytic'
-import { useJanModelPrompt } from '@/hooks/useJanModelPrompt'
-import { PromptJanModel } from '@/containers/PromptJanModel'
-import { AnalyticProvider } from '@/providers/AnalyticProvider'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
 import { useTrayStatusSync } from '@/hooks/useTrayStatusSync'
 import ToolApproval from '@/containers/dialogs/ToolApproval'
@@ -25,62 +19,28 @@ import AgentFolderAccessDialog from '@/containers/dialogs/AgentFolderAccessDialo
 import { TranslationProvider } from '@/i18n/TranslationContext'
 import OutOfContextPromiseModal from '@/containers/dialogs/OutOfContextDialog'
 import AttachmentIngestionDialog from '@/containers/dialogs/AttachmentIngestionDialog'
-import WhatsNewDialog from '@/containers/dialogs/WhatsNewDialog'
-import { useEffect, useState } from 'react'
-import { localStorageKey } from '@/constants/localStorage'
+import { useEffect } from 'react'
 import GlobalError from '@/containers/GlobalError'
-import * as Sentry from '@sentry/react'
 import { GlobalEventHandler } from '@/providers/GlobalEventHandler'
 import { ServiceHubProvider } from '@/providers/ServiceHubProvider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LeftSidebar } from '@/components/left-sidebar'
 import { WindowControls } from '@/components/WindowControls'
+import { isConsumerBlockedPath } from '@/lib/consumer-routes'
 
 export const Route = createRootRoute({
   component: RootLayout,
+  beforeLoad: ({ location }) => {
+    if (isConsumerBlockedPath(location.pathname)) {
+      throw redirect({ to: route.home })
+    }
+  },
   errorComponent: ({ error }) => {
-    // ATO-113: router-level errors also reach Sentry (the ErrorBoundary in
-    // main.tsx wraps RouterProvider, but TanStack renders this component
-    // itself, so capture explicitly here too).
-    Sentry.captureException(error)
     return <GlobalError error={error} />
   },
 })
 
-const SETUP_COMPLETED_EVENT = 'app:setup-completed'
-
-/// Tracks the `setup-completed` localStorage flag so we can defer mounting
-/// `<BackendUpdater />` until after the dedicated onboarding flow finishes.
-/// During onboarding the SetupBackendStep handles backend recommendations
-/// inline; mounting the global dialog before then would surface a duplicate
-/// modal on top of the setup screen.
-function useSetupCompleted(): boolean {
-  const [completed, setCompleted] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return localStorage.getItem(localStorageKey.setupCompleted) === 'true'
-  })
-
-  useEffect(() => {
-    const sync = () => {
-      setCompleted(
-        localStorage.getItem(localStorageKey.setupCompleted) === 'true'
-      )
-    }
-    // Same-tab signal dispatched explicitly by SetupScreen when it persists
-    // the flag (the native 'storage' event only fires across tabs).
-    window.addEventListener(SETUP_COMPLETED_EVENT, sync)
-    window.addEventListener('storage', sync)
-    return () => {
-      window.removeEventListener(SETUP_COMPLETED_EVENT, sync)
-      window.removeEventListener('storage', sync)
-    }
-  }, [])
-
-  return completed
-}
-
 const AppLayout = () => {
-  const { showJanModelPrompt } = useJanModelPrompt()
   const {
     open: isLeftPanelOpen,
     setLeftPanel,
@@ -90,7 +50,6 @@ const AppLayout = () => {
   // Feeds live server / model / RAM state into the desktop system tray.
   // No-op outside macOS and Windows Tauri builds (see hook implementation).
   useTrayStatusSync()
-  const isSetupCompleted = useSetupCompleted()
 
   return (
     <div className="bg-neutral-50 dark:bg-background size-full relative">
@@ -100,7 +59,6 @@ const AppLayout = () => {
         defaultWidth={sidebarWidth}
         onWidthChange={setLeftPanelWidth}
       >
-        <AnalyticProvider />
         <KeyboardShortcutsProvider />
         {/* Fake absolute panel top to enable window drag */}
         {IS_WINDOWS && <WindowControls />}
@@ -116,10 +74,6 @@ const AppLayout = () => {
             data-tauri-drag-region
           />
         )}
-        <DialogAppUpdater />
-        {isSetupCompleted && <BackendUpdater />}
-        {isSetupCompleted && <TurboquantOptimalBackendDialog />}
-        <WhatsNewDialog />
         <LeftSidebar />
         <SidebarInset>
           <div className="bg-neutral-50 dark:bg-background size-full">
@@ -127,9 +81,6 @@ const AppLayout = () => {
           </div>
         </SidebarInset>
 
-        {/* Попап согласия на аналитику отключён; настройки → Privacy по-прежнему доступны */}
-        {/* {productAnalyticPrompt && <PromptAnalytic />} */}
-        {showJanModelPrompt && <PromptJanModel />}
       </SidebarProvider>
     </div>
   )

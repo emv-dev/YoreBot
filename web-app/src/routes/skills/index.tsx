@@ -80,12 +80,11 @@ export function SkillsPage() {
     }
   }
 
-  const tryInChat = (name: string) => {
+  const tryInChat = () => {
     setSidebarMode('agent')
     setAgentMode(TEMPORARY_CHAT_ID, true)
     void navigate({
       to: route.home,
-      search: { agentSkill: name },
     })
   }
 
@@ -189,7 +188,7 @@ export function SkillsPage() {
                   skill={skill}
                   canTry={canTry}
                   onDownload={() => void download(skill.name)}
-                  onTry={() => tryInChat(skill.name)}
+                  onTry={tryInChat}
                   onEdit={() => {
                     void select(skill.name)
                     setEditOpen(true)

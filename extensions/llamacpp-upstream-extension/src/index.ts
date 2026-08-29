@@ -40,6 +40,7 @@ import {
   friendlyBackendLabel,
   getBackendArchiveName,
   getBackendDownloadUrl,
+  getPinnedBackendArtifact,
   getCudartDownloadUrl,
   getCudartArchiveName,
   getCudaToolkitVersion,
@@ -186,15 +187,9 @@ function modelLoadReadyTimeoutSecs(configuredTimeoutSecs: number): number {
   return Math.max(base, MODEL_LOAD_READY_TIMEOUT_FLOOR_SECS)
 }
 
-/// Temporary hard pin: every launch forcibly reconciles `version_backend`
-/// to this exact ggml-org tag, preserving the user's backend *type*
-/// (cpu/cuda/vulkan/macos-arm64) but never their *version* — this WILL
-/// downgrade a newer manually-installed backend just as readily as it
-/// upgrades an older one. Mirrors the CI/build pins in `Makefile`
-/// (`LLAMACPP_UPSTREAM_TAG`) and `atomic-chat-conf/backends/manifest.json`
-/// (`tag_name`). Remove (or move to a real settings-driven pin) once the
-/// team is done validating this tag broadly. See `enforcePinnedBackendVersion`.
-const PINNED_BACKEND_TAG = 'b9937'
+/// Immutable Windows runtime tag. Only CPU and Vulkan artifacts from the
+/// local YoreBot catalog are accepted by the download path.
+const PINNED_BACKEND_TAG = 'b10431'
 
 /**
  * Override the default app.log function to use Jan's logging system.
@@ -1399,8 +1394,8 @@ export default class llamacpp_upstream_extension extends AIEngine {
 
   /**
    * Forcibly reconciles the active backend to `PINNED_BACKEND_TAG`,
-   * preserving the user's current backend *type* (cpu/cuda/vulkan/
-   * macos-arm64) — never their version. Runs once per launch, after
+   * preserving the current supported backend *type* (CPU or Vulkan) — never
+   * its version. Runs once per Windows launch, after
    * `configureBackends()` has resolved a concrete `version_backend`.
    *
    * This is a hard pin: it downgrades a newer manually-installed backend
@@ -1410,6 +1405,7 @@ export default class llamacpp_upstream_extension extends AIEngine {
    * untouched rather than bricking the install.
    */
   private async enforcePinnedBackendVersion(): Promise<void> {
+    if (!IS_WINDOWS) return
     try {
       const current = stripBom(this.config.version_backend || '')
       if (!isConcreteVersionBackend(current)) {
@@ -4980,6 +4976,10 @@ export default class llamacpp_upstream_extension extends AIEngine {
       throw new Error(`Invalid backend string: ${backendString}`)
     }
     const [version, backend] = [stripBom(parts[0]), stripBom(parts[1])]
+    const pinnedArtifact = getPinnedBackendArtifact(version, backend)
+    if (!pinnedArtifact) {
+      throw new Error(`Backend is not pinned for YoreBot: ${backendString}`)
+    }
 
     // Defense-in-depth (ATO-95): a `latest` tag is an unresolved sentinel —
     // ggml-org has no `latest` release tag, so building a download URL with
@@ -5081,7 +5081,15 @@ export default class llamacpp_upstream_extension extends AIEngine {
 
       if (downloadManager?.downloadFiles) {
         await downloadManager.downloadFiles(
-          [{ url, save_path: archivePath, proxy }],
+          [
+            {
+              url,
+              save_path: archivePath,
+              proxy,
+              sha256: pinnedArtifact.sha256,
+              size: pinnedArtifact.size,
+            },
+          ],
           taskId,
           onProgress,
           false
@@ -5094,7 +5102,15 @@ export default class llamacpp_upstream_extension extends AIEngine {
           'download-extension not available, falling back to raw download_files invoke'
         )
         await invoke<void>('download_files', {
-          items: [{ url, save_path: archivePath, proxy }],
+          items: [
+            {
+              url,
+              save_path: archivePath,
+              proxy,
+              sha256: pinnedArtifact.sha256,
+              size: pinnedArtifact.size,
+            },
+          ],
           taskId,
           headers: {},
           resume: false,

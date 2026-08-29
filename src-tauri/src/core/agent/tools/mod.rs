@@ -99,6 +99,7 @@ pub async fn execute(call: &ToolCallPayload, context: &ToolContext<'_>) -> ToolO
         | "os.fs.write"
         | "os.fs.mkdir"
         | "os.fs.edit"
+        | "os.fs.move"
         | "os.fs.trash"
         | "os.fs.patch" => fs::execute(&call.tool, &call.args, context).await,
         "os.fs.archive.list" | "os.fs.archive.read_entry" | "os.fs.archive.extract" => {
@@ -210,11 +211,7 @@ async fn authorize_call(
         return Ok(prepared.call);
     }
     let fingerprint = fingerprint_prepared_action(&prepared.call.tool, &prepared.call.args);
-    let can_remember = is_approval_gated && !prepared.escaped_root;
-    if can_remember && context.approval.is_allowed(&fingerprint).await {
-        return Ok(prepared.call);
-    }
-
+    let can_remember = false;
     let mut resources = prepared.resources;
     resources.extend(non_path_resources(&prepared.call));
     if let Some(invocation) = skill_invocation {
@@ -232,7 +229,9 @@ async fn authorize_call(
     let request = ApprovalRequest {
         tool: prepared.call.tool.clone(),
         reason: reasons.join("; "),
-        preview: safe_preview(&prepared.call),
+        preview: safe_preview(&prepared.call)
+            .await
+            .map_err(ToolOutcome::error)?,
         affected_resources: resources,
         fingerprint,
         can_remember,
@@ -253,29 +252,11 @@ async fn authorize_call(
     }
 }
 
-fn safe_preview(call: &ToolCallPayload) -> Value {
-    let mut preview = serde_json::Map::new();
-    let allowed = [
-        "path",
-        "pathA",
-        "pathB",
-        "destination",
-        "cwd",
-        "method",
-        "pid",
-        "signal",
-        "apply",
-        "skill",
-        "script",
-        "timeout_ms",
-    ];
-    if let Some(args) = call.args.as_object() {
-        for key in allowed {
-            if let Some(value) = args.get(key) {
-                preview.insert(key.into(), value.clone());
-            }
-        }
-    }
+async fn safe_preview(call: &ToolCallPayload) -> Result<Value, String> {
+    // Approval is the user's last chance to stop a consequential action. Show
+    // the exact prepared payload; redaction or truncation can change its
+    // meaning and make an unsafe action look harmless.
+    let mut preview = call.args.as_object().cloned().unwrap_or_default();
     match call.tool.as_str() {
         "os.fs.trash" => {
             let paths = call
@@ -301,6 +282,10 @@ fn safe_preview(call: &ToolCallPayload) -> Value {
                 .unwrap_or(0);
             preview.insert("mode".into(), Value::String(mode.into()));
             preview.insert("byte_count".into(), Value::from(byte_count));
+            preview.insert(
+                "diff".into(),
+                Value::String(fs::text_mutation_preview(call).await?),
+            );
         }
         "os.fs.edit" => {
             preview.insert(
@@ -311,6 +296,10 @@ fn safe_preview(call: &ToolCallPayload) -> Value {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                 ),
+            );
+            preview.insert(
+                "diff".into(),
+                Value::String(fs::text_mutation_preview(call).await?),
             );
         }
         "os.fs.archive.extract" => {
@@ -340,76 +329,28 @@ fn safe_preview(call: &ToolCallPayload) -> Value {
                 .cloned()
                 .unwrap_or_default();
             preview.insert("targets".into(), Value::Array(targets));
+            preview.insert(
+                "diff".into(),
+                Value::String(required_string(&call.args, "patch")?),
+            );
         }
         _ => {}
     }
     if call.tool == "os.shell.run" {
-        let program = call.args.get("cmd").and_then(Value::as_str).unwrap_or("");
-        preview.insert(
-            "command".into(),
-            Value::String(if program.chars().any(char::is_whitespace) {
-                "<shell command omitted>".into()
-            } else {
-                program.into()
-            }),
-        );
+        let program = required_string(&call.args, "cmd")?;
+        preview.insert("command".into(), Value::String(program));
         preview.insert(
             "arguments".into(),
-            Value::String("<arguments omitted>".into()),
+            Value::Array(
+                call.args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
         );
     }
-    if call.tool == "skill.run_script" {
-        const MAX_PREVIEW_ARGUMENTS: usize = 16;
-        let values = call
-            .args
-            .get("args")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        let mut arguments = values
-            .iter()
-            .take(MAX_PREVIEW_ARGUMENTS)
-            .filter_map(Value::as_str)
-            .map(safe_script_argument_preview)
-            .map(Value::String)
-            .collect::<Vec<_>>();
-        let omitted = values.len().saturating_sub(MAX_PREVIEW_ARGUMENTS);
-        if omitted > 0 {
-            arguments.push(Value::String(format!(
-                "<{omitted} additional arguments omitted>"
-            )));
-        }
-        preview.insert("argument_count".into(), Value::from(values.len()));
-        preview.insert("args".into(), Value::Array(arguments));
-    }
-    if let Some(url) = call.args.get("url").and_then(Value::as_str) {
-        preview.insert("url".into(), Value::String(safe_url_preview(url)));
-    }
-    Value::Object(preview)
-}
-
-fn safe_script_argument_preview(raw: &str) -> String {
-    const MAX_ARGUMENT_CHARS: usize = 256;
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return safe_url_preview(raw);
-    }
-    let lower = raw.to_ascii_lowercase();
-    if [
-        "authorization",
-        "bearer ",
-        "api_key",
-        "apikey",
-        "password",
-        "token=",
-        "secret=",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-        || lower.starts_with("hf_")
-    {
-        return "<redacted>".into();
-    }
-    truncate(raw.to_owned(), MAX_ARGUMENT_CHARS)
+    Ok(Value::Object(preview))
 }
 
 fn safe_url_preview(raw: &str) -> String {
@@ -812,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn desktop_actions_dispatch_without_approval() {
+    async fn desktop_actions_are_denied_without_approval() {
         let root = test_dir();
         let approval = TestApproval {
             approved: false,
@@ -860,11 +801,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(clipboard.status, ToolStatus::Ok);
-        assert_eq!(notification.status, ToolStatus::Ok);
-        assert_eq!(desktop.clipboard_writes.load(Ordering::SeqCst), 1);
-        assert_eq!(desktop.notifications.load(Ordering::SeqCst), 1);
-        assert_eq!(approval.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(clipboard.status, ToolStatus::Denied);
+        assert_eq!(notification.status, ToolStatus::Denied);
+        assert_eq!(desktop.clipboard_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(desktop.notifications.load(Ordering::SeqCst), 0);
+        assert_eq!(approval.calls.load(Ordering::SeqCst), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -926,7 +867,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_remembered_action_skips_approval_but_changed_args_ask_again() {
+    async fn remembered_fingerprint_never_skips_one_action_approval() {
         let root = test_dir();
         let approval = RememberingApproval::default();
         let loaded_tools = tool_view::LoadedTools::default();
@@ -963,7 +904,8 @@ mod tests {
         let fingerprint = approval.requests.lock().unwrap()[0].fingerprint.clone();
         approval.allowed.lock().unwrap().insert(fingerprint);
         assert!(authorize_call(&original, &context).await.is_ok());
-        assert_eq!(approval.requests.lock().unwrap().len(), 1);
+        assert_eq!(approval.requests.lock().unwrap().len(), 2);
+        assert!(!approval.requests.lock().unwrap()[1].can_remember);
 
         let changed = ToolCallPayload {
             tool: "os.fs.trash".into(),
@@ -971,12 +913,12 @@ mod tests {
         };
         std::fs::write(root.join("other.txt"), "two").unwrap();
         assert!(authorize_call(&changed, &context).await.is_ok());
-        assert_eq!(approval.requests.lock().unwrap().len(), 2);
+        assert_eq!(approval.requests.lock().unwrap().len(), 3);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
-    async fn folder_access_then_destructive_action_can_be_remembered() {
+    async fn folder_access_then_destructive_action_still_requires_each_approval() {
         let parent = test_dir();
         let root = parent.join("root");
         tokio::fs::create_dir(&root).await.unwrap();
@@ -1013,11 +955,11 @@ mod tests {
 
         assert!(authorize_call(&escaped, &context).await.is_ok());
         let request = approval.requests.lock().unwrap()[0].clone();
-        assert!(request.can_remember);
+        assert!(!request.can_remember);
         approval.allowed.lock().unwrap().insert(request.fingerprint);
 
         assert!(authorize_call(&escaped, &context).await.is_ok());
-        assert_eq!(approval.requests.lock().unwrap().len(), 1);
+        assert_eq!(approval.requests.lock().unwrap().len(), 2);
         std::fs::remove_dir_all(parent).unwrap();
     }
 
@@ -1119,31 +1061,50 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn approval_preview_omits_shell_arguments_and_url_credentials() {
+    #[tokio::test]
+    async fn approval_preview_shows_exact_shell_and_http_payloads() {
         let shell = safe_preview(&ToolCallPayload {
             tool: "os.shell.run".into(),
             args: serde_json::json!({
                 "cmd": "curl",
                 "args": ["-H", "Authorization: Bearer secret", "https://example.com"]
             }),
-        });
-        let shell_text = shell.to_string();
-        assert!(!shell_text.contains("secret"));
-        assert!(shell_text.contains("<arguments omitted>"));
+        })
+        .await
+        .unwrap();
+        assert_eq!(shell["command"], "curl");
+        assert_eq!(
+            shell["arguments"],
+            serde_json::json!(["-H", "Authorization: Bearer secret", "https://example.com"])
+        );
 
         let http = safe_preview(&ToolCallPayload {
             tool: "os.http.request".into(),
             args: serde_json::json!({
                 "url": "https://user:password@example.com/path?token=secret#fragment",
-                "method": "GET"
+                "method": "POST",
+                "headers": {
+                    "Authorization": "Bearer secret",
+                    "Content-Type": "application/json"
+                },
+                "body": "{\"answer\":42}",
+                "timeoutMs": 1234
             }),
-        });
-        assert_eq!(http["url"], "https://example.com/path");
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            http["url"],
+            "https://user:password@example.com/path?token=secret#fragment"
+        );
+        assert_eq!(http["method"], "POST");
+        assert_eq!(http["headers"]["Authorization"], "Bearer secret");
+        assert_eq!(http["body"], "{\"answer\":42}");
+        assert_eq!(http["timeoutMs"], 1234);
     }
 
-    #[test]
-    fn approval_preview_includes_bounded_scrubbed_skill_arguments() {
+    #[tokio::test]
+    async fn approval_preview_includes_exact_skill_and_desktop_payloads() {
         let preview = safe_preview(&ToolCallPayload {
             tool: "skill.run_script".into(),
             args: serde_json::json!({
@@ -1157,56 +1118,64 @@ mod tests {
                 ],
                 "timeout_ms": 30_000
             }),
-        });
+        })
+        .await
+        .unwrap();
 
         assert_eq!(preview["args"][0], "--repo");
         assert_eq!(preview["args"][1], "AtomicBot-ai/Atomic-Chat");
-        assert_eq!(preview["args"][2], "<redacted>");
-        assert_eq!(preview["args"][3], "https://example.com/path");
-        assert_eq!(preview["argument_count"], 4);
-        assert!(!preview.to_string().contains("secret"));
-        assert!(!preview.to_string().contains("password"));
+        assert_eq!(preview["args"][2], "Authorization: Bearer secret");
+        assert_eq!(
+            preview["args"][3],
+            "https://user:password@example.com/path?token=secret"
+        );
+
+        let clipboard = safe_preview(&ToolCallPayload {
+            tool: "os.clipboard.write".into(),
+            args: serde_json::json!({"text": "exact clipboard text"}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(clipboard["text"], "exact clipboard text");
+
+        let notification = safe_preview(&ToolCallPayload {
+            tool: "os.notify".into(),
+            args: serde_json::json!({"title": "Exact title", "body": "Exact body"}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(notification["title"], "Exact title");
+        assert_eq!(notification["body"], "Exact body");
     }
 
-    #[test]
-    fn approval_preview_marks_arguments_beyond_the_visible_limit() {
-        let arguments = (0..20)
-            .map(|index| format!("argument-{index}"))
-            .collect::<Vec<_>>();
-        let preview = safe_preview(&ToolCallPayload {
-            tool: "skill.run_script".into(),
-            args: serde_json::json!({
-                "skill": "test-skill",
-                "script": "inspect.sh",
-                "args": arguments
-            }),
-        });
-
-        assert_eq!(preview["argument_count"], 20);
-        assert_eq!(preview["args"].as_array().unwrap().len(), 17);
-        assert_eq!(preview["args"][16], "<4 additional arguments omitted>");
-    }
-
-    #[test]
-    fn approval_preview_summarizes_destructive_filesystem_calls_without_content() {
+    #[tokio::test]
+    async fn approval_preview_shows_exact_filesystem_changes() {
+        let root = test_dir();
+        let file = root.join("file.txt");
+        std::fs::write(&file, "before\n").unwrap();
         let write = safe_preview(&ToolCallPayload {
             tool: "os.fs.write".into(),
             args: serde_json::json!({
-                "path": "/workspace/file.txt",
-                "content": "sensitive body",
+                "path": file,
+                "content": "after\n",
                 "mode": "replace"
             }),
-        });
+        })
+        .await
+        .unwrap();
         assert_eq!(write["mode"], "replace");
-        assert_eq!(write["byte_count"], 14);
-        assert!(write.get("content").is_none());
+        assert_eq!(write["byte_count"], 6);
+        assert!(write["diff"].as_str().unwrap().contains("-before"));
+        assert!(write["diff"].as_str().unwrap().contains("+after"));
 
         let trash = safe_preview(&ToolCallPayload {
             tool: "os.fs.trash".into(),
             args: serde_json::json!({
                 "paths": ["/workspace/a.png", "/workspace/b.png"]
             }),
-        });
+        })
+        .await
+        .unwrap();
         assert_eq!(trash["count"], 2);
         assert_eq!(trash["paths"].as_array().unwrap().len(), 2);
 
@@ -1217,7 +1186,9 @@ mod tests {
                 "destination": "/workspace/out",
                 "overwrite": true
             }),
-        });
+        })
+        .await
+        .unwrap();
         assert_eq!(extract["overwrite"], true);
         assert_eq!(
             extract["limits"]["maxEntries"],
@@ -1227,13 +1198,16 @@ mod tests {
         let patch = safe_preview(&ToolCallPayload {
             tool: "os.fs.patch".into(),
             args: serde_json::json!({
-                "patch": "sensitive patch body",
+                "patch": "--- file.txt\n+++ file.txt\n@@ -1 +1 @@\n-before\n+after\n",
                 "apply": true,
                 "patch_paths": ["/workspace/file.txt"]
             }),
-        });
+        })
+        .await
+        .unwrap();
         assert_eq!(patch["apply"], true);
         assert_eq!(patch["targets"][0], "/workspace/file.txt");
-        assert!(patch.get("patch").is_none());
+        assert!(patch["diff"].as_str().unwrap().contains("-before"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

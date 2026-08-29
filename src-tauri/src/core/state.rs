@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::core::{
-    agent::approval_allowlist::ApprovalAllowlist, downloads::models::DownloadManagerState,
+    agent::{approval_allowlist::ApprovalAllowlist, entitlements::SharedEntitlementStore},
+    downloads::models::DownloadManagerState,
     mcp::models::McpSettings,
 };
 use rmcp::{
@@ -89,6 +90,7 @@ pub struct AppState {
     pub agent_pending_approvals: Arc<Mutex<HashMap<String, PendingAgentApproval>>>,
     pub agent_pending_folder_access: Arc<Mutex<HashMap<String, PendingAgentFolderAccess>>>,
     pub agent_approval_allowlist: Arc<Mutex<ApprovalAllowlist>>,
+    pub agent_entitlements: SharedEntitlementStore,
     pub agent_session_locks: AgentSessionLocks,
     pub mcp_settings: Arc<Mutex<McpSettings>>,
     pub mcp_shutdown_in_progress: Arc<Mutex<bool>>,

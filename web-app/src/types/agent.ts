@@ -8,6 +8,7 @@ export type AgentTurnFinishReason =
   | 'reply'
   | 'finish'
   | 'max_steps'
+  | 'quota'
   | 'cancelled'
   | 'failed'
 
@@ -110,6 +111,15 @@ export type AgentEvent =
   | { type: 'turn_started'; run_id: string; session_id: string }
   | { type: 'step_started'; step_index: number }
   | { type: 'reasoning_delta'; step_index: number; text: string }
+  | {
+      type: 'agent_usage'
+      step_index: number
+      prompt_tokens: number
+      predicted_tokens: number
+      step_tokens: number
+      day_tokens: number
+      daily_limit: number | null
+    }
   | { type: 'assistant_delta'; text: string }
   | {
       type: 'tool_call_parsed'

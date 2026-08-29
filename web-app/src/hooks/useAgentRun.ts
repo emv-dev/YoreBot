@@ -67,6 +67,8 @@ export function reduceAgentRunState(
         ...state,
         status: 'running',
       }
+    case 'agent_usage':
+      return state
     case 'reasoning_delta':
       return {
         ...state,

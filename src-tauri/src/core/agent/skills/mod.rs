@@ -12,7 +12,9 @@ use std::{
 
 pub use manifest::{parse_skill_file, SkillManifest, SkillPlatform};
 pub use registry::{SkillListEntry, SkillRecord, SkillRegistry};
-pub use seeding::{list_starter_skill_names, seed_starter_skills, SeedStarterSkillsResult};
+pub use seeding::{
+    list_starter_skill_names, seed_starter_skills, SeedStarterSkillsResult, YOREBOT_STARTER_SKILLS,
+};
 
 pub const AGENT_SKILLS_DIR: &str = "agent-skills";
 pub const BUNDLED_AGENT_SKILLS_RESOURCE_DIR: &str = "resources/agent-skills";

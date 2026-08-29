@@ -7,6 +7,7 @@ use std::{
 use super::manifest::parse_skill_file;
 
 const REMOVED_STARTER_SKILLS: &[&str] = &["ddgr-web-search", "exa-web-search"];
+pub const YOREBOT_STARTER_SKILLS: &[&str] = &["downloads-organizer"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeedStarterSkillsResult {
@@ -52,6 +53,15 @@ pub fn seed_starter_skills(
     names.sort();
     let mut installed = Vec::new();
     for name in names {
+        if !YOREBOT_STARTER_SKILLS.contains(&name.as_str()) {
+            let destination = destination_root.join(&name);
+            if destination.exists() {
+                fs::remove_dir_all(&destination)
+                    .map_err(|error| format!("Failed to prune starter skill `{name}`: {error}"))?;
+                removed.push(name);
+            }
+            continue;
+        }
         let source = source_root.join(&name);
         let manifest_content = fs::read_to_string(source.join("SKILL.md"))
             .map_err(|error| format!("Failed to read bundled skill `{name}`: {error}"))?;
@@ -133,18 +143,24 @@ mod tests {
     }
 
     #[test]
-    fn replaces_reserved_skills_and_preserves_custom_directories() {
+    fn seeds_only_yorebot_skills_and_preserves_custom_directories() {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         let destination = temp.path().join("destination");
-        write_skill(&source, "starter", "new");
-        write_skill(&destination, "starter", "old");
+        write_skill(&source, "downloads-organizer", "new");
+        write_skill(&source, "upstream-extra", "unused");
+        write_skill(&destination, "downloads-organizer", "old");
+        write_skill(&destination, "upstream-extra", "old");
         write_skill(&destination, "custom", "custom");
         let result = seed_starter_skills(&source, &destination).unwrap();
-        assert_eq!(result.installed, ["starter"]);
-        assert!(fs::read_to_string(destination.join("starter/SKILL.md"))
-            .unwrap()
-            .ends_with("new"));
+        assert_eq!(result.installed, ["downloads-organizer"]);
+        assert_eq!(result.removed, ["upstream-extra"]);
+        assert!(
+            fs::read_to_string(destination.join("downloads-organizer/SKILL.md"))
+                .unwrap()
+                .ends_with("new")
+        );
+        assert!(!destination.join("upstream-extra").exists());
         assert!(destination.join("custom/SKILL.md").exists());
     }
 
@@ -172,6 +188,7 @@ mod tests {
             ("audio-transcribe", vec![Darwin, Linux]),
             ("currency", vec![Darwin, Linux, Win32]),
             ("docker", vec![Darwin, Linux, Win32]),
+            ("downloads-organizer", vec![Darwin, Linux, Win32]),
             ("ffmpeg", vec![Darwin, Linux, Win32]),
             ("github", vec![Darwin, Linux, Win32]),
             ("gog-workspace", vec![Darwin, Linux]),
