@@ -299,7 +299,7 @@ async fn downloads_agent_acceptance() {
     let undo = harness
         .run_main(
             "downloads-undo",
-            "Undo the one successful move from this same session using only relative paths: move `Documents/quarterly-report.pdf` back to `quarterly-report.pdf`. Do not remove `Documents` or touch `mystery.download`. After the approved reverse move succeeds, list `.` and `Documents`, then reply with the exact restored and untouched paths.",
+            "Undo the one successful move from this same session using only relative paths: move `Documents/quarterly-report.pdf` back to `quarterly-report.pdf`. Do not remove `Documents` or touch `mystery.download`. After the approved reverse move succeeds, list `.` and `Documents`, then reply with the exact reverse-move source `Documents/quarterly-report.pdf`, restored destination `quarterly-report.pdf`, and untouched path `mystery.download`.",
             None,
             &undo_approval,
             6,
