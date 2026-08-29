@@ -44,6 +44,9 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     "-Name 'uv'",
     'Get-ProcessesAtExactPath',
     'Stop-Process -Id',
+    '-WorkingDirectory $installRoot',
+    'Write-LaunchDiagnostics',
+    'YoreBot exited during startup with exit code',
     "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\YoreBot'",
     'use a fresh Windows runner',
     'Uninstaller touched sibling sentinel',
@@ -52,6 +55,12 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   }
   assert.doesNotMatch(script, /Stop-Process\s+-Name/i)
   assert.doesNotMatch(script, /taskkill/i)
+  assert.doesNotMatch(script, /if\s*\(\$launchedApp\.ExitCode/i)
+  assert.doesNotMatch(script, /exited cleanly/i)
+  assert.ok(
+    script.indexOf('Stop-ExactProcesses -Path $appPath') <
+      script.indexOf('$launchedApp = Start-Process')
+  )
   assert.ok(
     script.indexOf('New-Item -ItemType Directory -Path $installSibling, $dataSibling') <
       script.indexOf("Join-Path $installSibling 'keep.txt'")

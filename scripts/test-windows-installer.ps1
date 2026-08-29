@@ -72,6 +72,54 @@ function Start-SiblingSentinel {
     $ownedSentinels.Add($process)
 }
 
+function Write-LaunchDiagnostics {
+    param(
+        [datetime] $StartedAt,
+        [System.Diagnostics.Process] $Process
+    )
+
+    $Process.Refresh()
+    $exitCode = if ($Process.HasExited) { $Process.ExitCode } else { 'still running' }
+    Write-Host "YoreBot startup diagnostic exit code: $exitCode"
+
+    $logRoot = Join-Path $env:APPDATA 'YoreBot/logs'
+    if (Test-Path -LiteralPath $logRoot -PathType Container) {
+        foreach ($log in @(
+            Get-ChildItem -LiteralPath $logRoot -File -Recurse |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 3
+        )) {
+            Write-Host "YoreBot log tail: $($log.FullName)"
+            Get-Content -LiteralPath $log.FullName -Tail 80 -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Host "No YoreBot app log directory found at $logRoot"
+    }
+
+    try {
+        $events = @(
+            Get-WinEvent -FilterHashtable @{
+                LogName = 'Application'
+                StartTime = $StartedAt
+            } -MaxEvents 100 -ErrorAction Stop |
+                Where-Object {
+                    $_.Level -eq 2 -and
+                    $_.Message -match 'YoreBot|Atomic-Chat|WebView2'
+                } |
+                Select-Object -First 10
+        )
+        if ($events.Count -eq 0) {
+            Write-Host 'No matching Windows Application error events found.'
+        }
+        foreach ($event in $events) {
+            Write-Host "Windows Application error: $($event.TimeCreated) $($event.ProviderName)"
+            Write-Host $event.Message
+        }
+    } catch {
+        Write-Host "Could not read Windows Application events: $($_.Exception.Message)"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Installer does not exist: $installer"
 }
@@ -119,22 +167,23 @@ try {
         throw 'YoreBot uninstall registration does not match the isolated install'
     }
 
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    do {
-        $appProcesses = @(Get-ProcessesAtExactPath -Path $appPath)
-        if ($appProcesses.Count -gt 0) { break }
-        Start-Sleep -Milliseconds 500
-    } while ([DateTime]::UtcNow -lt $deadline)
-
-    if ($appProcesses.Count -eq 0) {
-        Start-Process -FilePath $appPath | Out-Null
-        Start-Sleep -Seconds 2
-        $appProcesses = @(Get-ProcessesAtExactPath -Path $appPath)
-    }
-    if ($appProcesses.Count -eq 0) { throw 'YoreBot did not remain running after install' }
+    # Do not mistake the installer's optional auto-launch for the process under
+    # test. Stop only that exact installed path, then observe one owned launch.
+    Stop-ExactProcesses -Path $appPath
+    $launchStartedAt = Get-Date
+    $launchedApp = Start-Process `
+        -FilePath $appPath `
+        -WorkingDirectory $installRoot `
+        -PassThru
     Start-Sleep -Seconds 8
-    if (@(Get-ProcessesAtExactPath -Path $appPath).Count -eq 0) {
-        throw 'YoreBot exited during the immediate-crash observation window'
+    $launchedApp.Refresh()
+    if ($launchedApp.HasExited) {
+        Write-LaunchDiagnostics -StartedAt $launchStartedAt -Process $launchedApp
+        throw "YoreBot exited during startup with exit code $($launchedApp.ExitCode)"
+    }
+    $liveApp = Get-Process -Id $launchedApp.Id -ErrorAction Stop
+    if ([System.IO.Path]::GetFullPath($liveApp.Path) -ine $appPath) {
+        throw 'Observed YoreBot process did not run from the installed path'
     }
 
     New-Item -ItemType Directory -Path $installSibling, $dataSibling -Force | Out-Null
