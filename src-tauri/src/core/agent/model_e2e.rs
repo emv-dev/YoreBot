@@ -198,6 +198,16 @@ fn live_acceptance_uses_production_deadline_without_slowing_unit_tests() {
     );
 }
 
+#[test]
+fn undo_summary_accepts_current_paths_and_restoration_semantics() {
+    let events = [AgentEvent::AssistantReply {
+        text: "Moved quarterly-report.pdf back to root, mystery.download untouched".into(),
+    }];
+
+    assert_reply_mentions(&events, &["quarterly-report.pdf", "mystery.download"]);
+    assert_reply_mentions_any(&events, &["back", "restored", "root"]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires pinned upstream b10431 and Qwen3.5-9B Q4_K_M"]
 async fn downloads_agent_acceptance() {
@@ -330,14 +340,10 @@ async fn downloads_agent_acceptance() {
         file("quarterly-report.pdf", b"REPORT_SENTINEL_481"),
     ]);
     assert_snapshot(&harness.downloads, &undone);
-    assert_reply_mentions(
-        &undo,
-        &[
-            "Documents/quarterly-report.pdf",
-            "quarterly-report.pdf",
-            "mystery.download",
-        ],
-    );
+    // Tool, approval, and snapshot assertions above prove the exact historical
+    // source. The user-facing summary must accurately describe current state.
+    assert_reply_mentions(&undo, &["quarterly-report.pdf", "mystery.download"]);
+    assert_reply_mentions_any(&undo, &["back", "restored", "root"]);
 
     run_denied_scenario(&mut harness).await;
 }
@@ -730,6 +736,24 @@ fn assert_reply_mentions(events: &[AgentEvent], expected_paths: &[&str]) {
     for path in expected_paths {
         assert!(reply.contains(path), "reply omits {path:?}: {reply:?}");
     }
+}
+
+fn assert_reply_mentions_any(events: &[AgentEvent], expected_terms: &[&str]) {
+    let reply = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentEvent::AssistantReply { text } => Some(text.replace('\\', "/")),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing assistant reply: {events:#?}"));
+    let normalized = reply.to_ascii_lowercase();
+    assert!(
+        expected_terms
+            .iter()
+            .any(|term| normalized.contains(&term.to_ascii_lowercase())),
+        "reply omits restoration semantics {expected_terms:?}: {reply:?}"
+    );
 }
 
 fn assert_tool_status(events: &[AgentEvent], tool: &str, status: ToolStatus) {
