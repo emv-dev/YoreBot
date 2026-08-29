@@ -309,6 +309,27 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Keep generated content and hidden catalogs offline
+- **Context:** Assistant Markdown, Mermaid image directives, executable HTML
+  previews, and statically imported upstream catalog stores could make network
+  requests without a YoreBot user choosing a network action. The Windows
+  extension build also used an exclusion list that still bundled TurboQuant.
+- **Decision:** Replace Markdown images with inert labels, disable Mermaid
+  rendering, and show HTML artifacts only as code after an explicit click.
+  Disable upstream provider/model registry refreshes in the YoreBot consumer
+  build and expose only `llamacpp-upstream` at runtime. Build Windows extension
+  archives from an exact allowlist and verify the generated inventory.
+- **Consequences:** Generated content cannot silently load remote images or
+  execute HTML; blocked routes no longer cause registry egress; Windows cannot
+  silently acquire the mutable TurboQuant extension. Users may still copy or
+  download HTML and use explicitly authorized product network seams.
+- **Owner:** team.
+- **Links:** [Issue #9](https://github.com/emv-dev/YoreBot/issues/9),
+  [`web-app/src/containers/RenderMarkdown.tsx`](web-app/src/containers/RenderMarkdown.tsx),
+  [`web-app/src/containers/HtmlArtifact.tsx`](web-app/src/containers/HtmlArtifact.tsx),
+  [`web-app/src/services/providers/tauri.ts`](web-app/src/services/providers/tauri.ts),
+  [`scripts/verify-windows-extension-bundle.mjs`](scripts/verify-windows-extension-bundle.mjs).
+
 ### 2026-08-29 — Verify Gumroad subscriptions without a payment backend
 - **Context:** Issue #6 needs the seven-day trial and monthly/yearly catalog
   access, while mutable local entitlement JSON cannot be trusted with paid

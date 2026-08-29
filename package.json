@@ -48,7 +48,8 @@
     "build:web": "yarn workspace @janhq/web-app build",
     "build:extensions": "rimraf ./pre-install/*.tgz || true && yarn workspace @janhq/core build && cd extensions && yarn install && cd .. && run-script-os",
     "build:extensions:darwin": "cd extensions && yarn workspaces foreach -Apt run build:publish",
-    "build:extensions:win32": "cd extensions && yarn workspaces foreach -Apt --exclude @janhq/mlx-extension --exclude @janhq/foundation-models-extension run build:publish",
+    "build:extensions:win32": "rimraf ./pre-install/*.tgz && cd extensions && yarn workspaces foreach -Apt --include @janhq/assistant-extension --include @janhq/conversational-extension --include @janhq/download-extension --include @janhq/llamacpp-upstream-extension --include @janhq/rag-extension --include @janhq/vector-db-extension run build:publish",
+    "verify:extensions:win32": "node scripts/verify-windows-extension-bundle.mjs",
     "build:extensions:linux": "cd extensions && yarn workspaces foreach -Apt --exclude @janhq/mlx-extension --exclude @janhq/foundation-models-extension run build:publish",
     "prepare": "husky"
   },

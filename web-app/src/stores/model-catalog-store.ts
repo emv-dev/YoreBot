@@ -30,6 +30,7 @@ import {
 } from '@/services/model-catalog-registry'
 import { BASELINE_MODEL_CATALOG } from '@/constants/models'
 import type { CatalogModel } from '@/services/models/types'
+import { IS_YOREBOT_CONSUMER_BUILD } from '@/constants/yorebot-consumer'
 
 export type CatalogStatus = 'idle' | 'loading' | 'success' | 'error'
 
@@ -50,12 +51,14 @@ type ModelCatalogState = {
 }
 
 const seedCatalog = (): CatalogModel[] => {
+  if (IS_YOREBOT_CONSUMER_BUILD) return []
   const cached = getCachedCatalog()
   if (cached) return cached.manifest.models.slice()
   return BASELINE_MODEL_CATALOG.slice()
 }
 
 const seedIndex = (): CatalogIndexPayload | null => {
+  if (IS_YOREBOT_CONSUMER_BUILD) return null
   const cached = getCachedIndex()
   return cached ? cached.payload : null
 }
@@ -92,6 +95,21 @@ export const useModelCatalogStore = create<ModelCatalogState>()((set) => ({
   indexFetchedAt: getCachedIndex()?.fetchedAt ?? null,
   hasInitialized: false,
   refresh: async (options?: FetchOptions) => {
+    if (IS_YOREBOT_CONSUMER_BUILD) {
+      set({
+        catalog: [],
+        manifestUpdatedAt: null,
+        source: 'baseline',
+        status: 'success',
+        fetchedAt: null,
+        error: null,
+        index: null,
+        indexSource: 'baseline',
+        indexFetchedAt: null,
+        hasInitialized: true,
+      })
+      return
+    }
     const initialState = useModelCatalogStore.getState()
     set({ status: 'loading', error: null })
 
@@ -204,7 +222,7 @@ export const ensureCatalogLoaded = async (): Promise<CatalogModel[]> => {
  * Kick off the initial fetch in the background. Importing this module is
  * enough to start loading; tests can override or skip via mocking.
  */
-if (typeof window !== 'undefined') {
+if (!IS_YOREBOT_CONSUMER_BUILD && typeof window !== 'undefined') {
   void useModelCatalogStore
     .getState()
     .refresh()

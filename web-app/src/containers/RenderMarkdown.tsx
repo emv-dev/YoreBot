@@ -10,20 +10,14 @@ import {
 import { cn, disableIndentedCodeBlockPlugin } from '@/lib/utils'
 import { ttftEnabled, ttftMark, ttftReport } from '@/lib/ttft-timing'
 // import 'katex/dist/katex.min.css'
-import {
-  defaultRehypePlugins,
-  Streamdown,
-  type MermaidErrorComponentProps,
-} from 'streamdown'
+import { defaultRehypePlugins, Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
-import { mermaid } from '@streamdown/mermaid'
 
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
-import { MermaidError } from '@/components/MermaidError'
 import { ArtifactTrigger } from './ArtifactPanel'
 
 interface MarkdownProps {
@@ -50,8 +44,16 @@ const REHYPE_PLUGINS_WITH_RAW_HTML = [
   defaultRehypePlugins.harden,
   rehypeKatex,
 ]
-const STREAMDOWN_PLUGINS = { code, mermaid, cjk }
-const STREAMDOWN_CONTROLS = { mermaid: { fullscreen: false } }
+const STREAMDOWN_PLUGINS = { code, cjk }
+
+const BlockedImage: Components['img'] = ({ alt }) => (
+  <span
+    className="inline-flex rounded bg-muted px-2 py-1 text-muted-foreground text-xs"
+    data-blocked-markdown-image
+  >
+    Image blocked{alt ? `: ${alt}` : ''}
+  </span>
+)
 
 /** Pick a fence longer than any backtick run inside the code. */
 function makeFence(source: string): string {
@@ -197,20 +199,13 @@ function RenderMarkdownComponent({
     }
   }, [content, messageId])
 
-  const mermaidConfig = useMemo(
-    () =>
-      messageId
-        ? {
-            errorComponent: (props: MermaidErrorComponentProps) => (
-              <MermaidError messageId={messageId} {...props} />
-            ),
-          }
-        : {},
-    [messageId]
+  const safeComponents = useMemo<Components>(
+    () => ({ ...(components ?? {}), img: BlockedImage }),
+    [components]
   )
 
-  // Props for the nested renderer that delegates non-HTML code blocks back to
-  // streamdown so mermaid / syntax highlighting behave exactly as before.
+  // Delegate non-HTML code blocks back to streamdown for inert syntax
+  // highlighting. Mermaid rendering is intentionally absent in YoreBot.
   const delegateProps = useMemo(
     () => ({
       animate: false as const,
@@ -218,15 +213,13 @@ function RenderMarkdownComponent({
       remarkPlugins: REMARK_PLUGINS,
       rehypePlugins: REHYPE_PLUGINS,
       plugins: STREAMDOWN_PLUGINS,
-      controls: STREAMDOWN_CONTROLS,
-      mermaid: mermaidConfig,
-      components,
+      components: safeComponents,
     }),
-    [components, mermaidConfig]
+    [safeComponents]
   )
 
-  const mergedComponents = useMemo<Components | undefined>(() => {
-    if (!enableHtmlPreview) return components
+  const mergedComponents = useMemo<Components>(() => {
+    if (!enableHtmlPreview) return safeComponents
 
     const CodeRenderer: Components['code'] = ({
       node,
@@ -265,14 +258,14 @@ function RenderMarkdownComponent({
         return <ArtifactTrigger code={codeText} streaming={!!isStreaming} />
       }
 
-      // Delegate every other code block (incl. mermaid) to streamdown.
+      // Delegate every other code block to inert syntax highlighting.
       const fence = makeFence(codeText)
       const reconstructed = `${fence}${match?.[1] ?? ''}\n${codeText}\n${fence}`
       return <Streamdown {...delegateProps}>{reconstructed}</Streamdown>
     }
 
-    return { code: CodeRenderer, ...(components ?? {}) }
-  }, [enableHtmlPreview, components, delegateProps, isStreaming])
+    return { code: CodeRenderer, ...safeComponents, img: BlockedImage }
+  }, [enableHtmlPreview, safeComponents, delegateProps, isStreaming])
 
   if (content.length > 0 && content.length < 32 && !components) {
     return (
@@ -313,8 +306,6 @@ function RenderMarkdownComponent({
         rehypePlugins={rehypePlugins}
         components={mergedComponents}
         plugins={STREAMDOWN_PLUGINS}
-        controls={STREAMDOWN_CONTROLS}
-        mermaid={mermaidConfig}
       >
         {normalizedContent}
       </Streamdown>
@@ -328,7 +319,7 @@ export const RenderMarkdown = memo(
     prevProps.components === nextProps.components &&
     prevProps.enableHtmlPreview === nextProps.enableHtmlPreview &&
     prevProps.allowRawHtml === nextProps.allowRawHtml &&
-    // With HTML preview on, re-render on streaming→done to drop the loader.
+    // Re-render when streamed HTML settles so its status becomes complete.
     (!nextProps.enableHtmlPreview ||
       prevProps.isStreaming === nextProps.isStreaming)
 )

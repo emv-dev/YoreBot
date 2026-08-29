@@ -24,10 +24,10 @@
         "font-src": [
           "https://fonts.gstatic.com blob: data: tauri://localhost http://tauri.localhost"
         ],
-        "img-src": "'self' asset: http://asset.localhost blob: data: https:",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
         "media-src": "'self' asset: http://asset.localhost blob: data: mediastream:",
-        "frame-src": "'self' blob: data: artifact: http://artifact.localhost",
-        "child-src": "'self' blob: data: artifact: http://artifact.localhost",
+        "frame-src": "'self' blob: data:",
+        "child-src": "'self' blob: data:",
         "style-src": "'unsafe-inline' 'self' https://fonts.googleapis.com",
         "script-src": "'self' 'unsafe-eval' asset: $APPDATA/**.* http://asset.localhost"
       },

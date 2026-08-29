@@ -205,6 +205,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           yarn build:tauri:plugin:api
           yarn build:extensions:win32
+          yarn verify:extensions:win32
           yarn download:bin
           yarn copy:assets:tauri
           yarn build:icon
@@ -217,7 +218,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
-          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location

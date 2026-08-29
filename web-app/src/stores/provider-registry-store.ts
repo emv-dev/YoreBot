@@ -25,6 +25,7 @@ import {
   type RegistryFetchResult,
 } from '@/services/provider-registry'
 import { BASELINE_PROVIDERS } from '@/constants/providers'
+import { IS_YOREBOT_CONSUMER_BUILD } from '@/constants/yorebot-consumer'
 
 export type RegistryStatus = 'idle' | 'loading' | 'success' | 'error'
 export type RegistrySource = 'remote' | 'cache' | 'baseline'
@@ -42,6 +43,7 @@ type RegistryState = {
 }
 
 const seedProviders = (): ModelProvider[] => {
+  if (IS_YOREBOT_CONSUMER_BUILD) return []
   const cached = getCachedManifest()
   if (cached) {
     const remoteIds = new Set(cached.manifest.providers.map((p) => p.provider))
@@ -70,6 +72,18 @@ export const useProviderRegistryStore = create<RegistryState>()((set) => ({
   error: null,
   hasInitialized: false,
   refresh: async (options?: FetchOptions) => {
+    if (IS_YOREBOT_CONSUMER_BUILD) {
+      set({
+        providers: [],
+        status: 'success',
+        source: 'baseline',
+        fetchedAt: null,
+        manifestUpdatedAt: null,
+        error: null,
+        hasInitialized: true,
+      })
+      return
+    }
     set({ status: 'loading', error: null })
 
     let result: RegistryFetchResult
@@ -132,7 +146,7 @@ export const ensureRegistryLoaded = async (): Promise<ModelProvider[]> => {
  * Kick off the initial fetch in the background. Importing this module is
  * enough to start loading; tests can override or skip via mocking.
  */
-if (typeof window !== 'undefined') {
+if (!IS_YOREBOT_CONSUMER_BUILD && typeof window !== 'undefined') {
   void useProviderRegistryStore
     .getState()
     .refresh()

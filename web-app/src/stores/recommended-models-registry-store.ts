@@ -25,6 +25,7 @@ import {
   type RegistrySource,
 } from '@/services/recommended-models-registry'
 import { BASELINE_RECOMMENDED_MODELS } from '@/constants/models'
+import { IS_YOREBOT_CONSUMER_BUILD } from '@/constants/yorebot-consumer'
 
 export type RegistryStatus = 'idle' | 'loading' | 'success' | 'error'
 
@@ -41,6 +42,7 @@ type RegistryState = {
 }
 
 const seedRecommendations = (): Recommendation[] => {
+  if (IS_YOREBOT_CONSUMER_BUILD) return []
   const cached = getCachedManifest()
   if (cached) return cached.manifest.recommendations.slice()
   return BASELINE_RECOMMENDED_MODELS.slice()
@@ -64,6 +66,18 @@ export const useRecommendedModelsRegistryStore = create<RegistryState>()(
     error: null,
     hasInitialized: false,
     refresh: async (options?: FetchOptions) => {
+      if (IS_YOREBOT_CONSUMER_BUILD) {
+        set({
+          recommendations: [],
+          status: 'success',
+          source: 'baseline',
+          fetchedAt: null,
+          manifestUpdatedAt: null,
+          error: null,
+          hasInitialized: true,
+        })
+        return
+      }
       set({ status: 'loading', error: null })
 
       let result: RegistryFetchResult
@@ -137,7 +151,7 @@ export const ensureRecommendedModelsLoaded = async (): Promise<
  * Kick off the initial fetch in the background. Importing this module is
  * enough to start loading; tests can override or skip via mocking.
  */
-if (typeof window !== 'undefined') {
+if (!IS_YOREBOT_CONSUMER_BUILD && typeof window !== 'undefined') {
   void useRecommendedModelsRegistryStore
     .getState()
     .refresh()

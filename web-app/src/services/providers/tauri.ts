@@ -12,6 +12,8 @@ import { fetch as fetchTauri } from '@tauri-apps/plugin-http'
 import { invoke } from '@tauri-apps/api/core'
 import { DefaultProvidersService } from './default'
 import { getModelCapabilities } from '@/lib/models'
+import { IS_YOREBOT_CONSUMER_BUILD } from '@/constants/yorebot-consumer'
+import { LOCAL_LLAMACPP_PROVIDER } from '@/lib/utils'
 
 /**
  * Turn a raw `get_local_http` failure (e.g. `HTTP 404: 404 page not found`,
@@ -105,7 +107,9 @@ export class TauriProvidersService extends DefaultProvidersService {
 
   async getProviders(): Promise<ModelProvider[]> {
     try {
-      const registryProviders = await ensureRegistryLoaded()
+      const registryProviders = IS_YOREBOT_CONSUMER_BUILD
+        ? []
+        : await ensureRegistryLoaded()
       const builtinProviders = registryProviders
         .map((provider) => {
           let models = (provider.models ?? []) as Model[]
@@ -142,6 +146,12 @@ export class TauriProvidersService extends DefaultProvidersService {
 
       const runtimeProviders: ModelProvider[] = []
       for (const [providerName, value] of EngineManager.instance().engines) {
+        if (
+          IS_YOREBOT_CONSUMER_BUILD &&
+          providerName !== LOCAL_LLAMACPP_PROVIDER
+        ) {
+          continue
+        }
         const models = await value.list() ?? [] 
         const provider: ModelProvider = {
           active: false,

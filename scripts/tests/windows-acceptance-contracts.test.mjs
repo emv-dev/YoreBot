@@ -60,6 +60,57 @@ test('ordinary-laptop model and Windows CPU runtime remain exactly pinned', () =
   }
 })
 
+test('Windows extension bundle is a fail-closed allowlist without TurboQuant', () => {
+  const packageJson = JSON.parse(read('package.json'))
+  const verifier = read('scripts/verify-windows-extension-bundle.mjs')
+  const internal = read('.github/workflows/windows-internal.yml')
+  const signed = read('.github/workflows/windows-signed-candidate.yml')
+
+  const build = packageJson.scripts['build:extensions:win32']
+  for (const workspace of [
+    '@janhq/assistant-extension',
+    '@janhq/conversational-extension',
+    '@janhq/download-extension',
+    '@janhq/llamacpp-upstream-extension',
+    '@janhq/rag-extension',
+    '@janhq/vector-db-extension',
+  ]) {
+    assert.ok(build.includes(`--include ${workspace}`), `missing allowlist entry: ${workspace}`)
+    assert.ok(verifier.includes(`'${workspace}'`), `missing inventory entry: ${workspace}`)
+  }
+
+  assert.doesNotMatch(build, /--exclude/)
+  assert.doesNotMatch(build, /@janhq\/llamacpp-extension/)
+  assert.match(build, /rimraf .*pre-install\/\*\.tgz/)
+  assert.match(internal, /yarn verify:extensions:win32/)
+  assert.match(signed, /yarn verify:extensions:win32/)
+  assert.match(verifier, /Unexpected Windows extension bundle inventory/)
+})
+
+test('Windows runs the generated-content and startup zero-egress regressions', () => {
+  const internal = read('.github/workflows/windows-internal.yml')
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'))
+  const app = read('src-tauri/src/lib.rs')
+  const html = read('web-app/src/containers/HtmlArtifact.tsx')
+  const markdown = read('web-app/src/containers/RenderMarkdown.tsx')
+
+  for (const suite of [
+    'RenderMarkdown.security.test.tsx',
+    'HtmlArtifact.security.test.tsx',
+    'yorebot-auto-egress.test.ts',
+  ]) {
+    assert.ok(internal.includes(suite), `Windows CI omits ${suite}`)
+  }
+  assert.equal(
+    config.app.security.csp['img-src'],
+    "'self' asset: http://asset.localhost blob: data:"
+  )
+  assert.doesNotMatch(app, /register_uri_scheme_protocol\("artifact"/)
+  assert.doesNotMatch(html, /<iframe|set_artifact_html|allow-popups|allow-forms/)
+  assert.doesNotMatch(markdown, /@streamdown\/mermaid/)
+  assert.match(markdown, /data-blocked-markdown-image/)
+})
+
 test('disabled public updater is not registered during desktop startup', () => {
   const app = read('src-tauri/src/lib.rs')
   const config = JSON.parse(read('src-tauri/tauri.conf.json'))
