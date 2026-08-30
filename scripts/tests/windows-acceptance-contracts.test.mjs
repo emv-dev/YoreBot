@@ -399,7 +399,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     'data-testid="chat-input"',
     'aria-label="YoreBot response"',
     'Reply with exactly YOREBOT_CHAT_OK.',
-    "reply.Contains('YOREBOT_CHAT_OK')",
+    "marker: reply.includes('YOREBOT_CHAT_OK')",
     'Qwen3.5-9B-Q4_K_M',
     '3885219b6810b007914f3a7950a8d1b469d598a5',
     'sizeBytes: 5_680_522_464',
@@ -422,13 +422,30 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     assert.ok(script.includes(property), `strict CDP parse omits ${property}`)
   }
   assert.doesNotMatch(script, /^["']@\S/m)
-  assert.match(script, /replies\.length <= \$baselineReplyCount/)
+  assert.match(script, /replies\.length > \$baselineReplyCount/)
   assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
   assert.doesNotMatch(script, /Stop-Process\s+-Name|taskkill/i)
   assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
   assert.match(setup, /aria-label=["']YoreBot setup["']/)
   assert.match(chatInput, /aria-label=["']Send message["']/)
+  assert.match(chatInput, /aria-label=["']Chat error["']/)
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
+  const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
+  const completed = script.indexOf('$chatCompleted = $true')
+  const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
+  assert.ok(marker >= 0 && completed > marker && stopApp > completed)
+  assert.match(
+    script.slice(marker, stopApp),
+    /aria-label="Send message"[\s\S]*aria-label="Chat error"/
+  )
+  const uninstall = script.indexOf('$uninstall = Start-Process')
+  const orphanCheck = script.indexOf('YoreBot llama-server survived uninstall')
+  const pass = script.indexOf('$passed = $true')
+  assert.ok(uninstall >= 0 && orphanCheck > uninstall && orphanCheck < pass)
+  assert.match(
+    script.slice(uninstall, pass),
+    /\$serverProcess\.Refresh\(\)[\s\S]*\$serverProcess\.HasExited/
+  )
 
   const firstUse = workflow.indexOf(
     '- name: Verify installed automatic setup and first Chat response'

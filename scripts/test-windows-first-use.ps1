@@ -574,7 +574,7 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         throw 'The tiny prompt did not render in the actual Chat UI'
     }
 
-    $reply = ''
+    $chatCompleted = $false
     $replyDeadline = [DateTime]::UtcNow.AddMinutes(15)
     do {
         $appProcess.Refresh()
@@ -582,19 +582,34 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         if ($appProcess.HasExited -or $serverProcess.HasExited) {
             throw 'YoreBot or its exact local model exited while answering Chat'
         }
-        $replyExpression = @"
+        $chatStateExpression = @"
 (() => {
   const replies = [...document.querySelectorAll('[aria-label="YoreBot response"]')];
-  if (replies.length <= $baselineReplyCount) return '';
-  return (replies.at(-1)?.innerText ?? '').trim();
+  const reply = replies.length > $baselineReplyCount
+    ? (replies.at(-1)?.innerText ?? '')
+    : '';
+  return JSON.stringify({
+    marker: reply.includes('YOREBOT_CHAT_OK'),
+    complete: document.querySelector('[aria-label="Send message"]') instanceof HTMLButtonElement,
+    error: Boolean(document.querySelector('[aria-label="Chat error"]')?.innerText.trim()),
+  });
 })()
 "@
-        $reply = [string](Invoke-CdpExpression -Socket $cdpSocket -Expression $replyExpression)
-        if ($reply.Contains('YOREBOT_CHAT_OK')) { break }
+        $chatStateJson = Invoke-CdpExpression `
+            -Socket $cdpSocket `
+            -Expression $chatStateExpression
+        $chatState = $chatStateJson | ConvertFrom-Json
+        if ($chatState.error) {
+            throw 'Actual Chat UI reported an error after the local response began'
+        }
+        if ($chatState.marker -and $chatState.complete) {
+            $chatCompleted = $true
+            break
+        }
         Start-Sleep -Seconds 1
     } while ([DateTime]::UtcNow -lt $replyDeadline)
-    if (-not $reply.Contains('YOREBOT_CHAT_OK')) {
-        throw 'Actual Chat UI did not render the expected local response marker'
+    if (-not $chatCompleted) {
+        throw 'Actual Chat UI did not complete with the expected local response marker'
     }
 
     $cdpSocket.Dispose()
@@ -616,6 +631,16 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     }
     if (Test-Path -LiteralPath $uninstallKey) {
         throw 'Uninstaller left YoreBot registered'
+    }
+    $serverExitDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $serverProcess.Refresh()
+        if ($serverProcess.HasExited) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $serverExitDeadline)
+    if (-not $serverProcess.HasExited -or
+        @(Get-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot).Count -ne 0) {
+        throw 'YoreBot llama-server survived uninstall'
     }
     foreach ($marker in @(
         (Join-Path $installSibling 'keep.txt'),

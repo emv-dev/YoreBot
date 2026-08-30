@@ -2625,7 +2625,11 @@ const ChatInput = memo(function ChatInput({
       </div>
 
       {message && (
-        <div className="-mt-0.5 mx-2 pb-2 px-3 pt-1.5 rounded-b-lg text-xs text-destructive transition-all duration-200 ease-in-out">
+        <div
+          role="alert"
+          aria-label="Chat error"
+          className="-mt-0.5 mx-2 pb-2 px-3 pt-1.5 rounded-b-lg text-xs text-destructive transition-all duration-200 ease-in-out"
+        >
           <div className="flex items-center gap-1 justify-between">
             {message}
             <IconX
