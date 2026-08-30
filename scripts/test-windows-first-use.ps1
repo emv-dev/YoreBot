@@ -341,6 +341,26 @@ function Invoke-CdpExpression {
     return $valueProperty.Value
 }
 
+function Get-BoundedCdpText {
+    param([object] $Value, [int] $Limit = 120)
+
+    if ($null -eq $Value) { return '<missing>' }
+    $text = [regex]::Replace([string]$Value, '[\x00-\x1f\x7f]', '?')
+    if ($text.Length -gt $Limit) { return $text.Substring(0, $Limit) }
+    return $text
+}
+
+function Get-CdpUriDiagnostic {
+    param([object] $Value)
+
+    try {
+        $uri = [Uri]([string]$Value)
+        return Get-BoundedCdpText -Value "$($uri.Scheme)://$($uri.Host):$($uri.Port)$($uri.AbsolutePath)"
+    } catch {
+        return '<invalid>'
+    }
+}
+
 function Connect-YoreBotWebView {
     param([int] $Port, [System.Diagnostics.Process] $Process)
 
@@ -368,17 +388,58 @@ function Connect-YoreBotWebView {
             continue
         }
 
-        $pageTargets = @($targets | Where-Object {
+        $targetDescriptions = @($targets | ForEach-Object {
             $typeProperty = $_.PSObject.Properties['type']
+            $titleProperty = $_.PSObject.Properties['title']
+            $urlProperty = $_.PSObject.Properties['url']
             $socketProperty = $_.PSObject.Properties['webSocketDebuggerUrl']
-            $null -ne $typeProperty -and
-                $typeProperty.Value -eq 'page' -and
-                $null -ne $socketProperty -and
-                -not [string]::IsNullOrWhiteSpace($socketProperty.Value)
+            $typeValue = if ($null -eq $typeProperty) { $null } else { $typeProperty.Value }
+            $titleValue = if ($null -eq $titleProperty) { $null } else { $titleProperty.Value }
+            $urlValue = if ($null -eq $urlProperty) { $null } else { $urlProperty.Value }
+            $socketValue = if ($null -eq $socketProperty) { $null } else { $socketProperty.Value }
+            "type=$(Get-BoundedCdpText -Value $typeValue),title=$(Get-BoundedCdpText -Value $titleValue),url=$(Get-CdpUriDiagnostic -Value $urlValue),websocket=$(Get-CdpUriDiagnostic -Value $socketValue)"
         })
-        $lastTargetDiagnostic = "target_count=$($targets.Count) page_target_count=$($pageTargets.Count)"
-        $target = $pageTargets | Select-Object -First 1
-        if ($null -eq $target) {
+        $lastTargetDiagnostic = "target_count=$($targets.Count) targets=[$($targetDescriptions -join '|')]"
+
+        $eligibleTargets = @($targets | Where-Object {
+            $typeProperty = $_.PSObject.Properties['type']
+            $titleProperty = $_.PSObject.Properties['title']
+            $urlProperty = $_.PSObject.Properties['url']
+            $socketProperty = $_.PSObject.Properties['webSocketDebuggerUrl']
+            $isExpectedType = $null -ne $typeProperty -and
+                @('page', 'webview') -contains $typeProperty.Value
+            $isYoreBotTitle = $null -ne $titleProperty -and
+                $titleProperty.Value -ceq 'YoreBot'
+            if ($null -eq $typeProperty -or
+                $null -eq $titleProperty -or
+                $null -eq $urlProperty -or
+                $null -eq $socketProperty -or
+                -not $isExpectedType -or
+                -not $isYoreBotTitle -or
+                [string]::IsNullOrWhiteSpace($urlProperty.Value) -or
+                [string]::IsNullOrWhiteSpace($socketProperty.Value)) {
+                return $false
+            }
+            try {
+                $documentUri = [Uri]([string]$urlProperty.Value)
+                $isTauriOrigin = (
+                    $documentUri.Scheme -eq 'tauri' -and
+                    $documentUri.Host -ieq 'localhost' -and
+                    $documentUri.IsDefaultPort
+                ) -or (
+                    $documentUri.Scheme -eq 'http' -and
+                    $documentUri.IsDefaultPort -and (
+                        $documentUri.Host -ieq 'tauri.localhost' -or
+                        $documentUri.Host -ieq 'asset.localhost'
+                    )
+                )
+                return $isTauriOrigin -and [string]::IsNullOrEmpty($documentUri.UserInfo)
+            } catch {
+                return $false
+            }
+        })
+        $target = $eligibleTargets | Select-Object -First 1
+        if ($eligibleTargets.Count -ne 1) {
             Start-Sleep -Milliseconds 500
             continue
         }

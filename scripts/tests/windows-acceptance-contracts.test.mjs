@@ -439,6 +439,26 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(connect, /\$firstSocketError = ''/)
   assert.match(connect, /WebView2 first WebSocket diagnostic:/)
   assert.match(connect, /WebView2 target diagnostic:/)
+  const edgeWebViewTarget = {
+    type: 'webview',
+    title: 'YoreBot',
+    url: 'http://tauri.localhost/',
+    webSocketDebuggerUrl:
+      'ws://localhost:9229/devtools/page/0123456789ABCDEF',
+  }
+  assert.equal(edgeWebViewTarget.type, 'webview')
+  assert.equal(new URL(edgeWebViewTarget.url).host, 'tauri.localhost')
+  assert.match(
+    connect,
+    /@\('page', 'webview'\) -contains \$typeProperty\.Value/
+  )
+  assert.match(connect, /\$titleProperty\.Value -ceq 'YoreBot'/)
+  assert.match(connect, /\$documentUri\.Host -ieq 'tauri\.localhost'/)
+  assert.match(connect, /\$documentUri\.Host -ieq 'asset\.localhost'/)
+  assert.match(connect, /if \(\$eligibleTargets\.Count -ne 1\)/)
+  for (const field of ['type=', 'title=', 'url=', 'websocket=']) {
+    assert.ok(connect.includes(field), `target diagnostic omits ${field}`)
+  }
   assert.match(connect, /\$reportedUri\.AbsolutePath -notmatch '\^\/devtools\/page\//)
   assert.match(connect, /\$uriBuilder\.Host = '127\.0\.0\.1'/)
   assert.doesNotMatch(script, /^["']@\S/m)
