@@ -407,7 +407,12 @@ export const MessageItem = memo(
     )
 
     return (
-      <div className="w-full mb-4">
+      <article
+        aria-label={
+          message.role === 'assistant' ? 'YoreBot response' : 'Your message'
+        }
+        className="w-full mb-4"
+      >
         {/* Render message parts */}
         {traceBlocks.map((block, index) => {
           switch (block.kind) {
@@ -505,7 +510,7 @@ export const MessageItem = memo(
             />
           </div>
         )}
-      </div>
+      </article>
     )
   },
   (prevProps, nextProps) => {

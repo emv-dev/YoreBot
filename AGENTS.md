@@ -309,6 +309,56 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-30 — Reuse one scoped helper for Windows install cleanup
+- **Context:** A fresh installed Chat turn left its exact data-root
+  `llama-server` running after silent uninstall because the inline NSIS
+  PowerShell command ignored cleanup failures.
+- **Decision:** Bundle one Windows PowerShell helper through Tauri and invoke
+  it after install/reinstall and before uninstall. Resolve executable paths
+  cross-bitness with `QueryFullProcessImageNameW`; stop the exact installed
+  YoreBot main executable first, then only `llama-server`, Bun, and uv whose
+  canonical executable is equal to or below the exact YoreBot install or
+  default data root. Abort before file removal if cleanup fails. Run the same
+  helper after reinstall, before auto-launch, so it can reap an older backend.
+- **Consequences:** Uninstall and upgrade cannot silently leave a known
+  YoreBot-owned main process or helper alive, including when 32-bit NSIS starts
+  Windows PowerShell against a 64-bit backend. Prefix siblings and unrelated
+  same-name processes remain outside the cleanup boundary; custom data folders
+  remain outside this existing NSIS policy.
+- **Owner:** team.
+- **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
+  [`src-tauri/resources/stop-yorebot-owned-processes.ps1`](src-tauri/resources/stop-yorebot-owned-processes.ps1),
+  [`src-tauri/windows/hooks.nsh`](src-tauri/windows/hooks.nsh).
+
+### 2026-08-30 — Skip discovery HEAD for integrity-pinned downloads
+- **Context:** Fresh Windows setup failed closed when Hugging Face rate-limited
+  a redundant size-discovery HEAD for the exact pinned YoreBot model.
+- **Decision:** Use a supplied nonzero `DownloadItem.size` for progress and the
+  expected GET length without a HEAD request. Keep HEAD discovery for unpinned
+  items and always retain final exact size and SHA-256 validation.
+- **Consequences:** Immutable product downloads avoid a dispensable request
+  without weakening integrity checks; unpinned download behavior is unchanged.
+- **Owner:** team.
+- **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
+  [`src-tauri/src/core/downloads/helpers.rs`](src-tauri/src/core/downloads/helpers.rs).
+
+### 2026-08-29 — Drive installed first-use Chat through loopback WebView2 debugging
+- **Context:** Issue #21 requires evidence that a fresh Windows installer uses
+  the real automatic setup path and returns a visible local Chat response;
+  existing model tests bypassed both the installed app and consumer UI.
+- **Decision:** Keep the 5.7 GB proof manual-only and drive the installed
+  WebView2 over a temporary loopback-only CDP port from PowerShell. Reuse the
+  product setup, pinned model/runtime manifests, and scoped NSIS uninstall;
+  add no product automation dependency or test-only setup bypass.
+- **Consequences:** One bounded ritual can prove no-choice setup, exact pin
+  integrity, an actual rendered Chat turn, and sibling-safe uninstall on a
+  fresh Windows runner. PR builds retain only fast contracts and setup
+  fail-before-download tests.
+- **Owner:** team.
+- **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
+  [`scripts/test-windows-first-use.ps1`](scripts/test-windows-first-use.ps1),
+  [`.github/workflows/windows-internal.yml`](.github/workflows/windows-internal.yml).
+
 ### 2026-08-29 — Gate checkout on recorded immutable model provenance
 - **Context:** Access checkout did not identify the included local model and
   remained available when setup had not recorded a reviewed model pin.

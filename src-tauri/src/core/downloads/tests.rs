@@ -3,7 +3,7 @@ use super::models::*;
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server, StatusCode};
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -82,6 +82,56 @@ async fn spawn_interrupted_download_server(
     (
         format!("http://{address}/model.gguf"),
         request_count,
+        handle,
+    )
+}
+
+async fn spawn_head_rejecting_download_server() -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<Result<(), hyper::Error>>,
+) {
+    let head_count = Arc::new(AtomicUsize::new(0));
+    let get_count = Arc::new(AtomicUsize::new(0));
+    let service_head_count = head_count.clone();
+    let service_get_count = get_count.clone();
+    let make_service = make_service_fn(move |_| {
+        let service_head_count = service_head_count.clone();
+        let service_get_count = service_get_count.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |request: Request<Body>| {
+                let service_head_count = service_head_count.clone();
+                let service_get_count = service_get_count.clone();
+                async move {
+                    let response = if request.method() == Method::HEAD {
+                        service_head_count.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::TOO_MANY_REQUESTS)
+                            .body(Body::empty())
+                            .unwrap()
+                    } else {
+                        service_get_count.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_LENGTH, "6")
+                            .body(Body::from("abcdef"))
+                            .unwrap()
+                    };
+                    Ok::<_, Infallible>(response)
+                }
+            }))
+        }
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = Server::from_tcp(listener).unwrap().serve(make_service);
+    let handle = tokio::spawn(server);
+    (
+        format!("http://{address}/model.gguf"),
+        head_count,
+        get_count,
         handle,
     )
 }
@@ -412,6 +462,88 @@ async fn resumes_an_interrupted_download_from_the_persisted_offset() {
     assert_eq!(bytes, b"abcdef");
     assert_eq!(requests, 2);
     let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+}
+
+#[tokio::test]
+async fn pinned_size_skips_head_even_when_head_is_rate_limited() {
+    let (url, head_count, get_count, server) = spawn_head_rejecting_download_server().await;
+    let app = mock_app();
+    let relative_path = format!(
+        "models/pinned-head-skip-{}/model.gguf",
+        uuid::Uuid::new_v4()
+    );
+    let data_root = crate::core::app::commands::get_jan_data_folder_path(app.handle().clone());
+    let save_path = data_root.join(&relative_path);
+    let item = DownloadItem {
+        url,
+        save_path: relative_path,
+        proxy: None,
+        sha256: Some(
+            "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721".to_string(),
+        ),
+        size: Some(6),
+        model_id: Some("test/pinned".to_string()),
+    };
+
+    let result = _download_files_internal(
+        app.handle().clone(),
+        std::slice::from_ref(&item),
+        &HashMap::new(),
+        "pinned-head-skip",
+        false,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    let bytes = tokio::fs::read(&save_path).await.ok();
+    let heads = head_count.load(Ordering::SeqCst);
+    let gets = get_count.load(Ordering::SeqCst);
+    server.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+
+    assert!(result.is_ok(), "pinned download failed: {result:?}");
+    assert_eq!(heads, 0, "a pinned size must not issue a HEAD request");
+    assert_eq!(gets, 1);
+    assert_eq!(bytes.as_deref(), Some(b"abcdef".as_slice()));
+}
+
+#[tokio::test]
+async fn unpinned_size_still_uses_remote_head() {
+    let (url, head_count, get_count, server) = spawn_head_rejecting_download_server().await;
+    let app = mock_app();
+    let relative_path = format!("models/unpinned-head-{}/model.gguf", uuid::Uuid::new_v4());
+    let data_root = crate::core::app::commands::get_jan_data_folder_path(app.handle().clone());
+    let save_path = data_root.join(&relative_path);
+    let item = DownloadItem {
+        url,
+        save_path: relative_path,
+        proxy: None,
+        sha256: None,
+        size: None,
+        model_id: Some("test/unpinned".to_string()),
+    };
+
+    let result = _download_files_internal(
+        app.handle().clone(),
+        std::slice::from_ref(&item),
+        &HashMap::new(),
+        "unpinned-head",
+        false,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    let heads = head_count.load(Ordering::SeqCst);
+    let gets = get_count.load(Ordering::SeqCst);
+    server.abort();
+    let _ = tokio::fs::remove_dir_all(save_path.parent().unwrap()).await;
+
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.contains("HTTP status 429")),
+        "unpinned download unexpectedly bypassed HEAD: {result:?}"
+    );
+    assert_eq!(heads, 1);
+    assert_eq!(gets, 0);
 }
 
 #[tokio::test]

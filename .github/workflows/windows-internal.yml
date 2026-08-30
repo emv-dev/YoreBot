@@ -52,7 +52,8 @@ jobs:
           node --test scripts/tests/windows-acceptance-contracts.test.mjs
           foreach ($script in @(
             "scripts/test-windows-installer.ps1",
-            "scripts/test-windows-pinned-model.ps1"
+            "scripts/test-windows-pinned-model.ps1",
+            "scripts/test-windows-first-use.ps1"
           )) {
             $tokens = $null
             $parseErrors = $null
@@ -136,8 +137,9 @@ jobs:
           }
 
           $hooks = Get-Content "src-tauri/windows/hooks.nsh" -Raw
+          $cleanup = Get-Content "src-tauri/resources/stop-yorebot-owned-processes.ps1" -Raw
           foreach ($forbidden in @('$INSTDIR*', '$APPDATA\YoreBot*')) {
-            if ($hooks.Contains($forbidden)) {
+            if (($hooks + $cleanup).Contains($forbidden)) {
               throw "Unsafe uninstaller prefix match remains: $forbidden"
             }
           }
@@ -146,9 +148,11 @@ jobs:
             "-ieq",
             ".StartsWith(",
             "[char]92",
-            "[System.StringComparison]::OrdinalIgnoreCase"
+            "[System.StringComparison]::OrdinalIgnoreCase",
+            "QueryFullProcessImageNameW",
+            "ProcessQueryLimitedInformation"
           )) {
-            if (-not ($hooks.Contains($required))) {
+            if (-not ($cleanup.Contains($required))) {
               throw "Uninstaller boundary guard is missing: $required"
             }
           }
@@ -174,6 +178,8 @@ jobs:
           if (Test-EqualOrChild "C:\Users\runneradmin\AppData\Roaming\YoreBot-old\bun.exe" "C:\Users\runneradmin\AppData\Roaming\YoreBot") {
             throw "Sibling data path must not match"
           }
+
+          ./scripts/test-windows-uninstall-cleanup.ps1
 
       - name: Install pinned icon build dependency
         shell: pwsh
@@ -243,7 +249,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
-          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/YoreBotSetupScreen.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
@@ -284,6 +290,76 @@ jobs:
           path: artifacts/*.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Build test-only first-use NSIS installer
+        if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $config = Get-Content 'src-tauri/tauri.windows.conf.json' -Raw | ConvertFrom-Json
+          if ($config.app.windows.Count -ne 1) {
+            throw 'Expected exactly one configured Windows webview'
+          }
+          $config.app.windows[0] | Add-Member `
+            -NotePropertyName 'additionalBrowserArgs' `
+            -NotePropertyValue '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229' `
+            -Force
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
+          $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+
+          $bundleDir = 'src-tauri/target/debug/bundle/nsis'
+          Get-ChildItem $bundleDir -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+          $tauriArguments = @('tauri', 'build', '--debug', '--bundles', 'nsis', '--ci')
+          $tauriArguments += @('--config', $configPath)
+          yarn @tauriArguments
+
+          $installers = @(Get-ChildItem $bundleDir -Filter '*.exe' -File -Recurse)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one test-only NSIS installer, found $($installers.Count)"
+          }
+          if (Test-Path -LiteralPath 'first-use-artifacts') {
+            throw 'Test-only first-use artifact directory already exists'
+          }
+          New-Item -ItemType Directory 'first-use-artifacts' | Out-Null
+          Copy-Item `
+            -LiteralPath $installers[0].FullName `
+            -Destination 'first-use-artifacts/YoreBot-first-use-test-only.exe'
+
+      - name: Verify installed automatic setup and first Chat response
+        if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        timeout-minutes: 55
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installers = @(Get-ChildItem "first-use-artifacts" -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-first-use-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-first-use.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
+
+      - name: Delete test-only first-use installer
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
+          if (Test-Path -LiteralPath $configPath) {
+            Remove-Item -LiteralPath $configPath -Force
+          }
+          if (Test-Path -LiteralPath 'first-use-artifacts') {
+            Remove-Item -LiteralPath 'first-use-artifacts' -Recurse -Force
+          }
+          Get-ChildItem 'src-tauri/target/debug/bundle/nsis' `
+            -Filter '*.exe' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Remove-Item -Force
 
       - name: Smoke fresh NSIS install and uninstall
         shell: pwsh

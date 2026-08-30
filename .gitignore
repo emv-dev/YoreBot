@@ -46,6 +46,7 @@ Cargo.lock
 src-tauri/resources/
 !src-tauri/resources/
 src-tauri/resources/*
+!src-tauri/resources/stop-yorebot-owned-processes.ps1
 !src-tauri/resources/agent-skills/
 !src-tauri/resources/agent-skills/**
 src-tauri/resources/lib

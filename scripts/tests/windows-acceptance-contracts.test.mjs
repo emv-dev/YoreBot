@@ -210,6 +210,10 @@ test('disabled public updater is not registered during desktop startup', () => {
 test('installer smoke owns exact processes and protects prefix siblings', () => {
   const script = read('scripts/test-windows-installer.ps1')
   const hooks = read('src-tauri/windows/hooks.nsh')
+  const cleanup = read('src-tauri/resources/stop-yorebot-owned-processes.ps1')
+  const cleanupTest = read('scripts/test-windows-uninstall-cleanup.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+  const windowsConfig = JSON.parse(read('src-tauri/tauri.windows.conf.json'))
 
   for (const value of [
     "'YoreBotTools'",
@@ -254,8 +258,63 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   )
   assert.doesNotMatch(hooks, /\$INSTDIR\*/)
   assert.doesNotMatch(hooks, /\$APPDATA\\YoreBot\*/)
-  assert.match(hooks, /\.StartsWith\(/)
-  assert.match(hooks, /\[char\]92/)
+  assert.match(cleanup, /\.StartsWith\(/)
+  assert.match(cleanup, /\[char\]92/)
+  assert.match(hooks, /stop-yorebot-owned-processes\.ps1/)
+  assert.match(hooks, /nsExec::ExecToStack/)
+  assert.match(hooks, /SetErrorLevel 1[\s\S]*Quit/)
+  assert.ok(
+    windowsConfig.bundle.resources.includes(
+      'resources/stop-yorebot-owned-processes.ps1',
+    ),
+    'cleanup helper must be bundled through the Tauri resource manifest',
+  )
+  assert.match(hooks, /-File "\$INSTDIR\\resources\\stop-yorebot-owned-processes\.ps1"/)
+  assert.match(hooks, /-MainExecutable "\$INSTDIR\\\$\{MAINBINARYNAME\}\.exe"/)
+  assert.doesNotMatch(hooks, /-File "\$INSTDIR\\stop-yorebot-owned-processes\.ps1"/)
+  assert.match(hooks, /!macro NSIS_HOOK_POSTINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_PROCESSES/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_PROCESSES/)
+  assert.doesNotMatch(hooks, /\bFile\s+\/oname=/)
+  assert.doesNotMatch(hooks, /\$PLUGINSDIR\\YoreBotStopOwnedProcesses/)
+  const preuninstall = hooks.slice(
+    hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL'),
+    hooks.indexOf('!macroend', hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL')),
+  )
+  assert.doesNotMatch(preuninstall, /SetOutPath "\$INSTDIR"/)
+  assert.match(cleanup, /QueryFullProcessImageNameW/)
+  assert.match(cleanup, /ProcessQueryLimitedInformation = 0x1000/)
+  assert.match(cleanup, /Get-Process -Name \$mainProcessName/)
+  assert.match(cleanup, /Get-Process -Name llama-server,bun,uv/)
+  assert.match(cleanup, /Stop-Process -Id/)
+  assert.match(cleanup, /\[DateTime\]::UtcNow\.AddSeconds\(15\)/)
+  assert.match(cleanup, /\.StartsWith\([\s\S]*\[System\.StringComparison\]::OrdinalIgnoreCase/)
+  assert.doesNotMatch(cleanup, /Stop-Process\s+-Name/i)
+  assert.doesNotMatch(cleanup, /taskkill/i)
+  for (const value of [
+    "'YoreBotTools'",
+    "'Roaming/YoreBotBackup'",
+    "'OtherApp'",
+    "-Name 'Atomic-Chat'",
+    "-Name 'llama-server'",
+    "-Name 'bun'",
+    "-Name 'uv'",
+    "'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'",
+    '-File $cleanupScript',
+    '-MainExecutable $mainExecutable',
+    'engine_bits=32 main_stopped=$ExpectedMain helpers_stopped=$ExpectedHelpers remaining=0',
+    'Invoke-Cleanup',
+    'Owned helper survived uninstall cleanup',
+    'Older-version orphan survived reinstall cleanup',
+    'Cleanup terminated a sibling or unrelated helper',
+  ]) {
+    assert.ok(cleanupTest.includes(value), `missing cleanup regression: ${value}`)
+  }
+  assert.ok(
+    cleanup.indexOf('$mainVictims =') < cleanup.indexOf('$helperVictims ='),
+    'the exact main app must be stopped before its owned helpers',
+  )
+  assert.match(workflow, /\.\/scripts\/test-windows-uninstall-cleanup\.ps1/)
+  assert.match(script, /resources\/stop-yorebot-owned-processes\.ps1/)
 })
 
 test('model smoke verifies both downloads before an exact outbound block and loopback request', () => {
@@ -379,6 +438,203 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
     existsSync(resolve(root, '.github/workflows/windows-pinned-model-smoke.yml')),
     false
   )
+})
+
+test('manual Windows first use drives installed automatic setup into real Chat', () => {
+  const scriptPath = resolve(root, 'scripts/test-windows-first-use.ps1')
+  assert.equal(existsSync(scriptPath), true, 'first-use script is missing')
+
+  const script = read('scripts/test-windows-first-use.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+  const baseConfig = read('src-tauri/tauri.conf.json')
+  const windowsConfig = read('src-tauri/tauri.windows.conf.json')
+  const releaseWorkflow = read('.github/workflows/release.yml')
+  const signedWorkflow = read('.github/workflows/windows-signed-candidate.yml')
+  const setup = read('web-app/src/containers/YoreBotSetupScreen.tsx')
+  const chatInput = read('web-app/src/containers/ChatInput.tsx')
+  const threadRoute = read('web-app/src/routes/threads/$threadId.tsx')
+  const messages = read('web-app/src/containers/MessageItem.tsx')
+
+  for (const value of [
+    'http://127.0.0.1:',
+    'aria-label="YoreBot setup"',
+    'data-testid="chat-input"',
+    'aria-label="YoreBot response"',
+    'Reply with exactly YOREBOT_CHAT_OK.',
+    "marker: reply.includes('YOREBOT_CHAT_OK')",
+    'Qwen3.5-9B-Q4_K_M',
+    '3885219b6810b007914f3a7950a8d1b469d598a5',
+    'sizeBytes: 5_680_522_464',
+    '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8',
+    'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64',
+    'resources/stop-yorebot-owned-processes.ps1',
+    'llamacpp-upstream/backends/b10431/win-cpu-x64',
+    'llamacpp-upstream/backends/b10431/win-vulkan-x64',
+    'Active Chat runtime did not report exact build 10431',
+    'DevToolsActivePort',
+    'Get-NetTCPConnection',
+    "Name = 'msedgewebview2.exe'",
+    'YoreBot installed first-use Chat acceptance passed',
+  ]) {
+    assert.ok(script.includes(value), `first-use proof omits ${value}`)
+  }
+  for (const property of [
+    "PSObject.Properties['id']",
+    "PSObject.Properties['error']",
+    "PSObject.Properties['result']",
+    "PSObject.Properties['exceptionDetails']",
+    "PSObject.Properties['value']",
+  ]) {
+    assert.ok(script.includes(property), `strict CDP parse omits ${property}`)
+  }
+  const connectStart = script.indexOf('function Connect-YoreBotWebView')
+  const connectEnd = script.indexOf('\nif (-not (Test-Path -LiteralPath $installer', connectStart)
+  assert.ok(connectStart >= 0 && connectEnd > connectStart)
+  const connect = script.slice(connectStart, connectEnd)
+  assert.match(
+    connect,
+    /\$response = Invoke-RestMethod[\s\S]*?-TimeoutSec 3[\s\S]*?\$targets = @\(\s*foreach \(\$entry in \$response\) \{ \$entry \}\s*\)/,
+    'Invoke-RestMethod JSON arrays must be explicitly enumerated before target filtering'
+  )
+  assert.match(
+    connect,
+    /\$socket = \[System\.Net\.WebSockets\.ClientWebSocket\]::new\(\)[\s\S]*?try \{[\s\S]*?\.ConnectAsync\([\s\S]*?\} catch \{[\s\S]*?\$socket\.Dispose\(\)/,
+    'a failed CDP WebSocket handshake must dispose its owned socket before retrying'
+  )
+  assert.match(
+    connect,
+    /\[void\]\s+\$socket\.ConnectAsync\(/,
+    'a successful CDP handshake must not leak VoidTaskResult into the function output'
+  )
+  assert.match(
+    script,
+    /function Invoke-CdpCommand[\s\S]*?\[void\]\s+\$Socket\.SendAsync\([\s\S]*?return Receive-CdpMessage/,
+    'sending a CDP command must not leak VoidTaskResult ahead of its response'
+  )
+  assert.match(connect, /\$firstSocketError = ''/)
+  assert.match(connect, /WebView2 first WebSocket diagnostic:/)
+  assert.match(connect, /WebView2 target diagnostic:/)
+  const edgeWebViewTarget = {
+    type: 'webview',
+    title: 'YoreBot',
+    url: 'http://tauri.localhost/',
+    webSocketDebuggerUrl:
+      'ws://localhost:9229/devtools/page/0123456789ABCDEF',
+  }
+  const oneElementInvokeRestResponse = [edgeWebViewTarget]
+  assert.deepEqual(
+    Array.from(oneElementInvokeRestResponse, (entry) => entry),
+    [edgeWebViewTarget]
+  )
+  assert.equal(edgeWebViewTarget.type, 'webview')
+  assert.equal(new URL(edgeWebViewTarget.url).host, 'tauri.localhost')
+  assert.match(
+    connect,
+    /@\('page', 'webview'\) -contains \$typeProperty\.Value/
+  )
+  assert.match(connect, /\$titleProperty\.Value -ceq 'YoreBot'/)
+  assert.match(connect, /\$documentUri\.Host -ieq 'tauri\.localhost'/)
+  assert.match(connect, /\$documentUri\.Host -ieq 'asset\.localhost'/)
+  assert.match(connect, /if \(\$eligibleTargets\.Count -ne 1\)/)
+  for (const field of ['type=', 'title=', 'url=', 'websocket=']) {
+    assert.ok(connect.includes(field), `target diagnostic omits ${field}`)
+  }
+  assert.match(connect, /\$reportedUri\.AbsolutePath -notmatch '\^\/devtools\/page\//)
+  assert.match(connect, /\$uriBuilder\.Host = '127\.0\.0\.1'/)
+  assert.doesNotMatch(script, /^["']@\S/m)
+  assert.match(script, /replies\.length > \$baselineReplyCount/)
+  assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
+  assert.doesNotMatch(script, /Stop-Process\s+-Name|taskkill/i)
+  assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
+  assert.match(setup, /aria-label=["']YoreBot setup["']/)
+  assert.match(chatInput, /aria-label=["']Send message["']/)
+  assert.match(threadRoute, /aria-label=["']Chat generation error["']/)
+  assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
+  assert.match(script, /\$cdpPort = 9229/)
+  assert.match(script, /Assert-LoopbackPortAvailable -Port \$cdpPort/)
+  assert.doesNotMatch(script, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/)
+  for (const source of [
+    baseConfig,
+    windowsConfig,
+    releaseWorkflow,
+    signedWorkflow,
+  ]) {
+    assert.doesNotMatch(source, /additionalBrowserArgs|remote-debugging-port/)
+  }
+  const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
+  const completed = script.indexOf('$chatCompleted = $true')
+  const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
+  assert.ok(marker >= 0 && completed > marker && stopApp > completed)
+  assert.match(
+    script.slice(marker, stopApp),
+    /aria-label="Send message"[\s\S]*aria-label="Chat generation error"/
+  )
+  const uninstall = script.indexOf('$uninstall = Start-Process')
+  const orphanCheck = script.indexOf('YoreBot llama-server survived uninstall')
+  const pass = script.indexOf('$passed = $true')
+  assert.ok(uninstall >= 0 && orphanCheck > uninstall && orphanCheck < pass)
+  assert.match(
+    script.slice(uninstall, pass),
+    /\$serverProcess\.Refresh\(\)[\s\S]*\$serverProcess\.HasExited/
+  )
+
+  const firstUse = workflow.indexOf(
+    '- name: Verify installed automatic setup and first Chat response'
+  )
+  const installer = workflow.indexOf(
+    '- name: Smoke fresh NSIS install and uninstall'
+  )
+  const agent = workflow.indexOf(
+    '- name: Verify Downloads Agent on pinned model and CPU runtime'
+  )
+  const upload = workflow.indexOf('- uses: actions/upload-artifact@v4')
+  const instrumentedBuild = workflow.indexOf(
+    '- name: Build test-only first-use NSIS installer'
+  )
+  const instrumentedCleanup = workflow.indexOf(
+    '- name: Delete test-only first-use installer'
+  )
+  assert.ok(
+    upload >= 0 &&
+      instrumentedBuild > upload &&
+      firstUse > instrumentedBuild &&
+      instrumentedCleanup > firstUse &&
+      installer > instrumentedCleanup &&
+      agent > installer
+  )
+  const acceptanceBuild = workflow.slice(instrumentedBuild, firstUse)
+  for (const value of [
+    'src-tauri/tauri.windows.conf.json',
+    'additionalBrowserArgs',
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
+    '--autoplay-policy=no-user-gesture-required',
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=9229',
+    "@('--config', $configPath)",
+    'first-use-artifacts',
+  ]) {
+    assert.ok(acceptanceBuild.includes(value), `acceptance build omits ${value}`)
+  }
+  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 1)
+  assert.match(
+    acceptanceBuild,
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'/
+  )
+  assert.match(
+    workflow.slice(firstUse, firstUse + 1_200),
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*first-use-artifacts[\s\S]*test-windows-first-use\.ps1/
+  )
+  assert.match(
+    workflow.slice(instrumentedCleanup, installer),
+    /if: always\(\) && github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*first-use-artifacts/
+  )
+  assert.match(
+    workflow.slice(agent, agent + 300),
+    /if: github\.event_name == 'workflow_dispatch'/
+  )
+  assert.doesNotMatch(workflow, /first_use_chat:/)
+  assert.match(workflow, /timeout-minutes: 55/)
+  assert.match(workflow, /YoreBotSetupScreen\.test\.tsx/)
 })
 
 test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublished', () => {

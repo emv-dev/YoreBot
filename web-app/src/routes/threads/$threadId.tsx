@@ -1735,7 +1735,11 @@ function ThreadDetail() {
                             ? OUT_OF_MEMORY_MESSAGE
                             : rawMessage
                       return (
-                        <div className="px-4 py-3 mx-4 my-2 rounded-lg border border-destructive/10 bg-destructive/10">
+                        <div
+                          role="alert"
+                          aria-label="Chat generation error"
+                          className="px-4 py-3 mx-4 my-2 rounded-lg border border-destructive/10 bg-destructive/10"
+                        >
                           <div className="flex items-start gap-3">
                             <IconAlertCircle className="size-5 text-destructive shrink-0 mt-0.5" />
                             <div className="flex-1">
