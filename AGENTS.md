@@ -309,6 +309,18 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-30 — Skip discovery HEAD for integrity-pinned downloads
+- **Context:** Fresh Windows setup failed closed when Hugging Face rate-limited
+  a redundant size-discovery HEAD for the exact pinned YoreBot model.
+- **Decision:** Use a supplied nonzero `DownloadItem.size` for progress and the
+  expected GET length without a HEAD request. Keep HEAD discovery for unpinned
+  items and always retain final exact size and SHA-256 validation.
+- **Consequences:** Immutable product downloads avoid a dispensable request
+  without weakening integrity checks; unpinned download behavior is unchanged.
+- **Owner:** team.
+- **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
+  [`src-tauri/src/core/downloads/helpers.rs`](src-tauri/src/core/downloads/helpers.rs).
+
 ### 2026-08-29 — Drive installed first-use Chat through loopback WebView2 debugging
 - **Context:** Issue #21 requires evidence that a fresh Windows installer uses
   the real automatic setup path and returns a visible local Chat response;

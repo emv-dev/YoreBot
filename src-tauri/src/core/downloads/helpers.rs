@@ -455,10 +455,14 @@ pub async fn _download_files_internal(
     // Calculate sizes for each file
     let mut file_sizes: HashMap<String, u64> = HashMap::new();
     for item in items.iter() {
-        let client = _get_client_for_item(item, &header_map).map_err(err_to_string)?;
-        let size = _get_file_size(&client, &item.url)
-            .await
-            .map_err(err_to_string)?;
+        let size = if let Some(size) = item.size.filter(|size| *size > 0) {
+            size
+        } else {
+            let client = _get_client_for_item(item, &header_map).map_err(err_to_string)?;
+            _get_file_size(&client, &item.url)
+                .await
+                .map_err(err_to_string)?
+        };
         file_sizes.insert(item.url.clone(), size);
     }
 
