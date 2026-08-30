@@ -341,6 +341,117 @@ test('model smoke verifies both downloads before an exact outbound block and loo
   assert.doesNotMatch(script, /Stop-Process\s+-Name/i)
 })
 
+test('real Chat and Agent work run inside one restored process-attributed network audit', () => {
+  assert.ok(
+    existsSync(resolve(root, 'scripts/windows-network-audit.ps1')),
+    'the shared Windows network-audit helper is missing'
+  )
+  const audit = read('scripts/windows-network-audit.ps1')
+  const auditRegression = read('scripts/test-windows-network-audit.ps1')
+  const firstUse = read('scripts/test-windows-first-use.ps1')
+  const agent = read('scripts/test-windows-pinned-model.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  for (const value of [
+    '{0CCE9226-69AE-11D9-BED3-505054503030}',
+    'auditpol.exe /backup',
+    'auditpol.exe /set',
+    'auditpol.exe /restore',
+    'Get-WinEvent',
+    '5157',
+    'QueryDosDeviceW',
+    'ProcessId',
+    'Application',
+    'DestAddress',
+    '%%14593',
+    'New-NetFirewallRule',
+    '-Program $canonicalPath',
+    '0.0.0.0-126.255.255.255',
+    '128.0.0.0-255.255.255.255',
+    '::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+    'Remove-NetFirewallRule',
+    'Non-loopback network attempt detected',
+    '/failure:enable',
+    'Network-audited program has no observed exact-path process',
+  ]) {
+    assert.ok(audit.includes(value), `missing network-audit guard: ${value}`)
+  }
+  assert.match(audit, /Select-Object -First 20/)
+  assert.doesNotMatch(audit, /\/success:enable/)
+  assert.doesNotMatch(audit, /RemoteAddress\s+Any|Stop-Process\s+-Name/i)
+
+  for (const value of [
+    'Start-YoreBotNetworkAudit',
+    'Add-YoreBotNetworkAuditProgram',
+    'Watch-YoreBotNetworkProcess',
+    'Assert-YoreBotNetworkAudit',
+    'Stop-YoreBotNetworkAudit',
+    '192.0.2.1',
+    'caught expected non-loopback attempt',
+    'audit policy was not restored',
+    "'127.255.255.255'",
+    "'::2'",
+  ]) {
+    assert.ok(
+      auditRegression.includes(value),
+      `missing live audit regression: ${value}`
+    )
+  }
+
+  const firstUseDownload = firstUse.indexOf(
+    "Get-FileHash -LiteralPath $modelPath -Algorithm SHA256"
+  )
+  const firstUseAudit = firstUse.indexOf('Start-YoreBotNetworkAudit')
+  const firstUsePrompt = firstUse.indexOf(
+    'Reply with exactly YOREBOT_CHAT_OK.'
+  )
+  const firstUseAssert = firstUse.indexOf('Assert-YoreBotNetworkAudit')
+  assert.ok(
+    firstUseDownload >= 0 &&
+      firstUseAudit > firstUseDownload &&
+      firstUsePrompt > firstUseAudit &&
+      firstUseAssert > firstUsePrompt
+  )
+  assert.match(firstUse, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$appPath/)
+  assert.match(firstUse, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/)
+  assert.match(firstUse, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$appProcess/)
+  assert.match(firstUse, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$serverProcess/)
+  for (const value of [
+    "'Network.enable'",
+    "'Network.requestWillBeSent'",
+    "'Network.webSocketCreated'",
+    'Assert-CdpNetworkAudit',
+    '$uri.IsUnc',
+    'Get-CdpNetworkUriDiagnostic',
+  ]) {
+    assert.ok(firstUse.includes(value), `missing WebView2 network guard: ${value}`)
+  }
+  assert.match(firstUse, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
+
+  const agentDownload = agent.indexOf(
+    'Assert-PinnedFile -Path $modelPath -Size $model.Size'
+  )
+  const agentAudit = agent.indexOf('Start-YoreBotNetworkAudit')
+  const agentRun = agent.indexOf(
+    'core::agent::model_e2e::downloads_agent_acceptance'
+  )
+  const agentAssert = agent.indexOf('Assert-YoreBotNetworkAudit')
+  assert.ok(
+    agentDownload >= 0 &&
+      agentAudit > agentDownload &&
+      agentRun > agentAudit &&
+      agentAssert > agentRun
+  )
+  assert.match(agent, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/)
+  assert.match(agent, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$agentTestExecutable/)
+  assert.match(agent, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$agentTestProcess/)
+  assert.match(agent, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
+
+  assert.match(workflow, /\.\/scripts\/test-windows-network-audit\.ps1/)
+  assert.match(workflow, /\.\/scripts\/test-windows-first-use\.ps1/)
+  assert.match(workflow, /-RunDownloadsAgentAcceptance/)
+})
+
 test('manual model ritual exercises the real Downloads Agent contract', () => {
   const script = read('scripts/test-windows-pinned-model.ps1')
   const harness = read('src-tauri/src/core/agent/model_e2e.rs')
@@ -543,7 +654,10 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(connect, /\$uriBuilder\.Host = '127\.0\.0\.1'/)
   assert.doesNotMatch(script, /^["']@\S/m)
   assert.match(script, /replies\.length > \$baselineReplyCount/)
-  assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
+  assert.match(
+    script,
+    /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/
+  )
   assert.doesNotMatch(script, /Stop-Process\s+-Name|taskkill/i)
   assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
   assert.match(setup, /aria-label=["']YoreBot setup["']/)

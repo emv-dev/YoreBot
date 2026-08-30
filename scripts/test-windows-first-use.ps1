@@ -13,6 +13,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+. (Join-Path $PSScriptRoot 'windows-network-audit.ps1')
+
 $installer = [System.IO.Path]::GetFullPath($InstallerPath)
 $workRootFull = [System.IO.Path]::GetFullPath($WorkRoot)
 $projectRoot = Split-Path $PSScriptRoot
@@ -35,17 +37,19 @@ $modelRevision = '3885219b6810b007914f3a7950a8d1b469d598a5'
 $modelSize = [int64]5680522464
 $modelSha256 = '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8'
 $modelSource = Get-Content (Join-Path $projectRoot 'web-app/src/constants/yorebot-models.ts') -Raw
-$firewallRuleName = "YoreBot first-use llama-server $([guid]::NewGuid())"
 $ownedSentinels = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $appProcess = $null
 $serverProcess = $null
 $cdpSocket = $null
+$networkAudit = $null
 $appStdoutPath = ''
 $appStderrPath = ''
 $cdpPort = 9229
 $createdWorkRoot = $false
 $installed = $false
 $passed = $false
+$script:CaptureCdpNetwork = $false
+$script:CdpNetworkEvents = [System.Collections.Generic.List[object]]::new()
 
 function Test-EqualOrChild {
     param([string] $Candidate, [string] $Root)
@@ -149,35 +153,60 @@ function Read-BoundedFileTail {
     }
 }
 
+function Get-YoreBotWebViewProcesses {
+    param([System.Diagnostics.Process] $Process)
+
+    $all = @(
+        Get-CimInstance Win32_Process `
+            -Filter "Name = 'msedgewebview2.exe'" `
+            -ErrorAction Stop
+    )
+    $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($candidate in $all) {
+        $idProperty = $candidate.PSObject.Properties['ProcessId']
+        $parentProperty = $candidate.PSObject.Properties['ParentProcessId']
+        $commandProperty = $candidate.PSObject.Properties['CommandLine']
+        if ($null -eq $idProperty) { continue }
+        $commandLine = if ($null -ne $commandProperty) {
+            [string]$commandProperty.Value
+        } else {
+            ''
+        }
+        if (($null -ne $parentProperty -and [int]$parentProperty.Value -eq $Process.Id) -or
+            $commandLine.IndexOf(
+                $webViewRoot,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -ge 0 -or
+            $commandLine.IndexOf(
+                'app.yorebot.desktop',
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -ge 0) {
+            [void]$ownedIds.Add([int]$idProperty.Value)
+        }
+    }
+    do {
+        $changed = $false
+        foreach ($candidate in $all) {
+            $idProperty = $candidate.PSObject.Properties['ProcessId']
+            $parentProperty = $candidate.PSObject.Properties['ParentProcessId']
+            if ($null -eq $idProperty -or $null -eq $parentProperty) { continue }
+            if ($ownedIds.Contains([int]$parentProperty.Value) -and
+                $ownedIds.Add([int]$idProperty.Value)) {
+                $changed = $true
+            }
+        }
+    } while ($changed)
+    return @($all | Where-Object {
+        $idProperty = $_.PSObject.Properties['ProcessId']
+        $null -ne $idProperty -and $ownedIds.Contains([int]$idProperty.Value)
+    })
+}
+
 function Write-WebViewDiagnostics {
     param([int] $Port, [System.Diagnostics.Process] $Process)
 
     Write-Host "WebView2 diagnostics: expected_port=$Port app_pid=$($Process.Id)"
-    $webViewProcesses = @(
-        Get-CimInstance Win32_Process `
-            -Filter "Name = 'msedgewebview2.exe'" `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-                $commandProperty = $_.PSObject.Properties['CommandLine']
-                $parentProperty = $_.PSObject.Properties['ParentProcessId']
-                $commandLine = if ($null -ne $commandProperty) {
-                    [string]$commandProperty.Value
-                } else {
-                    ''
-                }
-                ($null -ne $parentProperty -and
-                    [int]$parentProperty.Value -eq $Process.Id) -or
-                    $commandLine.IndexOf(
-                        $webViewRoot,
-                        [System.StringComparison]::OrdinalIgnoreCase
-                    ) -ge 0 -or
-                    $commandLine.IndexOf(
-                        'app.yorebot.desktop',
-                        [System.StringComparison]::OrdinalIgnoreCase
-                    ) -ge 0
-            } |
-            Select-Object -First 20
-    )
+    $webViewProcesses = @(Get-YoreBotWebViewProcesses -Process $Process | Select-Object -First 20)
     $webViewProcessIds = [System.Collections.Generic.List[int]]::new()
     foreach ($candidate in $webViewProcesses) {
         $idProperty = $candidate.PSObject.Properties['ProcessId']
@@ -244,6 +273,89 @@ function Write-FirstUseDiagnostics {
     }
 }
 
+function Add-CdpNetworkEvent {
+    param([Parameter(Mandatory)] $Message)
+
+    if (-not $script:CaptureCdpNetwork) { return }
+    $methodProperty = $Message.PSObject.Properties['method']
+    $paramsProperty = $Message.PSObject.Properties['params']
+    if ($null -eq $methodProperty -or $null -eq $paramsProperty) { return }
+    $method = [string]$methodProperty.Value
+    if ($method -notin @(
+        'Network.requestWillBeSent',
+        'Network.webSocketCreated',
+        'Network.webTransportCreated'
+    )) {
+        return
+    }
+    $params = $paramsProperty.Value
+    $url = $null
+    if ($method -eq 'Network.requestWillBeSent') {
+        $requestProperty = $params.PSObject.Properties['request']
+        if ($null -ne $requestProperty) {
+            $urlProperty = $requestProperty.Value.PSObject.Properties['url']
+            if ($null -ne $urlProperty) { $url = $urlProperty.Value }
+        }
+    } else {
+        $urlProperty = $params.PSObject.Properties['url']
+        if ($null -ne $urlProperty) { $url = $urlProperty.Value }
+    }
+    $script:CdpNetworkEvents.Add([pscustomobject]@{
+        Method = $method
+        Url = if ($null -eq $url) { '' } else { [string]$url }
+    })
+}
+
+function Test-CdpNetworkUrlIsLocal {
+    param([string] $Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    try { $uri = [Uri]$Value } catch { return $false }
+    if (-not $uri.IsAbsoluteUri) { return $false }
+    if ($uri.Scheme -eq 'file') {
+        return -not $uri.IsUnc
+    }
+    if ($uri.Scheme -in @('data', 'blob', 'about', 'tauri', 'asset')) {
+        return $true
+    }
+    if ($uri.Scheme -notin @('http', 'https', 'ws', 'wss')) { return $false }
+    if ($uri.Host -iin @('localhost', 'tauri.localhost', 'asset.localhost')) {
+        return $true
+    }
+    [System.Net.IPAddress] $address = $null
+    return [System.Net.IPAddress]::TryParse($uri.Host, [ref]$address) -and
+        [System.Net.IPAddress]::IsLoopback($address)
+}
+
+function Get-CdpNetworkUriDiagnostic {
+    param([object] $Value)
+
+    try {
+        $uri = [Uri]([string]$Value)
+        if (-not $uri.IsAbsoluteUri) { return '<invalid>' }
+        return Get-BoundedCdpText -Value "$($uri.Scheme)://$($uri.Host):$($uri.Port)"
+    } catch {
+        return '<invalid>'
+    }
+}
+
+function Assert-CdpNetworkAudit {
+    if (-not $script:CaptureCdpNetwork) {
+        throw 'WebView2 network observation ended before assertion'
+    }
+    $violations = @(
+        $script:CdpNetworkEvents |
+            Where-Object { -not (Test-CdpNetworkUrlIsLocal -Value $_.Url) }
+    )
+    if ($violations.Count -gt 0) {
+        foreach ($violation in @($violations | Select-Object -First 20)) {
+            Write-Host "WebView2 network-audit violation: method=$($violation.Method) destination=$(Get-CdpNetworkUriDiagnostic -Value $violation.Url)"
+        }
+        throw "Non-loopback WebView2 content attempt detected for $($violations.Count) request(s)"
+    }
+    Write-Host "YoreBot WebView2 network audit passed: observed_requests=$($script:CdpNetworkEvents.Count) non_loopback_attempts=0 result=pass"
+}
+
 function Receive-CdpMessage {
     param(
         [System.Net.WebSockets.ClientWebSocket] $Socket,
@@ -274,6 +386,7 @@ function Receive-CdpMessage {
 
         $json = [System.Text.Encoding]::UTF8.GetString($stream.ToArray())
         $message = $json | ConvertFrom-Json -Depth 30
+        Add-CdpNetworkEvent -Message $message
         $idProperty = $message.PSObject.Properties['id']
         if ($null -ne $idProperty -and [int]$idProperty.Value -eq $ExpectedId) {
             $errorProperty = $message.PSObject.Properties['error']
@@ -706,18 +819,82 @@ JSON.stringify({
         $serverVersionOutput -notmatch '(?m)(?:version:\s+b?10431(?:-|\s)|\(build\s+10431,)') {
         throw "Active Chat runtime did not report exact build 10431: exit=$serverVersionExitCode output=$serverVersionOutput"
     }
-    New-NetFirewallRule `
-        -DisplayName $firewallRuleName `
-        -Direction Outbound `
-        -Action Block `
-        -Program $serverPath `
-        -Profile Any | Out-Null
-    $firewallRule = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction Stop
-    if ($firewallRule.Enabled.ToString() -ne 'True' -or
-        $firewallRule.Direction.ToString() -ne 'Outbound' -or
-        $firewallRule.Action.ToString() -ne 'Block') {
-        throw 'Outbound firewall rule is not active for the exact Chat runtime'
+
+    # All declared model/runtime downloads and exact integrity checks are now
+    # complete. Audit and block every non-loopback product path before user
+    # content enters Chat.
+    $networkAudit = Start-YoreBotNetworkAudit `
+        -WorkRoot $workRootFull `
+        -Name 'YoreBot installed Chat privacy'
+    Add-YoreBotNetworkAuditProgram `
+        -State $networkAudit `
+        -Path $appPath `
+        -Role 'installed-app' | Out-Null
+    Add-YoreBotNetworkAuditProgram `
+        -State $networkAudit `
+        -Path $serverPath `
+        -Role 'owned-llama-server' | Out-Null
+    Watch-YoreBotNetworkProcess `
+        -State $networkAudit `
+        -Process $appProcess `
+        -Path $appPath `
+        -Role 'installed-app'
+    Watch-YoreBotNetworkProcess `
+        -State $networkAudit `
+        -Process $serverProcess `
+        -Path $serverPath `
+        -Role 'owned-llama-server'
+
+    $webViewProcesses = @(Get-YoreBotWebViewProcesses -Process $appProcess)
+    if ($webViewProcesses.Count -eq 0) {
+        throw 'No YoreBot-owned WebView2 process exists for the network audit'
     }
+    $ownedWebViewIds = @($webViewProcesses | ForEach-Object {
+        [int]$_.PSObject.Properties['ProcessId'].Value
+    })
+    $webViewPaths = @($webViewProcesses | ForEach-Object {
+        $pathProperty = $_.PSObject.Properties['ExecutablePath']
+        if ($null -eq $pathProperty -or [string]::IsNullOrWhiteSpace($pathProperty.Value)) {
+            throw 'YoreBot-owned WebView2 process has no executable path'
+        }
+        [System.IO.Path]::GetFullPath([string]$pathProperty.Value)
+    } | Sort-Object -Unique)
+    foreach ($webViewPath in $webViewPaths) {
+        $unownedSamePath = @(
+            Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction Stop |
+                Where-Object {
+                    $idProperty = $_.PSObject.Properties['ProcessId']
+                    $pathProperty = $_.PSObject.Properties['ExecutablePath']
+                    $null -ne $idProperty -and
+                        $null -ne $pathProperty -and
+                        [System.IO.Path]::GetFullPath([string]$pathProperty.Value) -ieq $webViewPath -and
+                        $ownedWebViewIds -notcontains [int]$idProperty.Value
+                }
+        )
+        if ($unownedSamePath.Count -gt 0) {
+            throw 'Refusing to firewall a shared WebView2 executable with unrelated live processes'
+        }
+        Add-YoreBotNetworkAuditProgram `
+            -State $networkAudit `
+            -Path $webViewPath `
+            -Role 'yorebot-webview2' | Out-Null
+    }
+    foreach ($candidate in $webViewProcesses) {
+        $processId = [int]$candidate.PSObject.Properties['ProcessId'].Value
+        $path = [System.IO.Path]::GetFullPath(
+            [string]$candidate.PSObject.Properties['ExecutablePath'].Value
+        )
+        $process = Get-Process -Id $processId -ErrorAction Stop
+        Watch-YoreBotNetworkProcess `
+            -State $networkAudit `
+            -Process $process `
+            -Path $path `
+            -Role 'yorebot-webview2' `
+            -SkipExistingConnectionCheck
+    }
+    $script:CdpNetworkEvents.Clear()
+    $script:CaptureCdpNetwork = $true
+    Invoke-CdpCommand -Socket $cdpSocket -Method 'Network.enable' | Out-Null
 
     $baselineReplyValue = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
 document.querySelectorAll('[aria-label="YoreBot response"]').length
@@ -811,6 +988,13 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         throw 'Actual Chat UI did not complete with the expected local response marker'
     }
 
+    # Flush queued CDP events before closing the observation window.
+    Start-Sleep -Seconds 1
+    Invoke-CdpExpression -Socket $cdpSocket -Expression 'true' | Out-Null
+    Assert-CdpNetworkAudit
+    Assert-YoreBotNetworkAudit -State $networkAudit
+    $script:CaptureCdpNetwork = $false
+
     $cdpSocket.Dispose()
     $cdpSocket = $null
     Stop-ExactProcesses -Path $appPath
@@ -872,6 +1056,9 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     if ($null -ne $cdpSocket) { $cdpSocket.Dispose() }
     Stop-ExactProcesses -Path $appPath
     Stop-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot
+    if ($null -ne $networkAudit) {
+        Stop-YoreBotNetworkAudit -State $networkAudit
+    }
     foreach ($sentinel in $ownedSentinels) {
         if (-not $sentinel.HasExited) {
             Stop-Process -Id $sentinel.Id -Force -ErrorAction SilentlyContinue
@@ -881,7 +1068,6 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     if ($installed -and (Test-Path -LiteralPath $uninstallerPath -PathType Leaf)) {
         Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait | Out-Null
     }
-    Remove-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
     if ($createdWorkRoot -and (Test-Path -LiteralPath $workRootFull)) {
         Remove-Item -LiteralPath $workRootFull -Recurse -Force
     }

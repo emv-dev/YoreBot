@@ -16,11 +16,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+. (Join-Path $PSScriptRoot 'windows-network-audit.ps1')
+
 $projectRoot = Split-Path $PSScriptRoot
 $modelManifestPath = Join-Path $projectRoot 'web-app/src/constants/yorebot-models.ts'
 $backendManifestPath = Join-Path $projectRoot 'extensions/llamacpp-upstream-extension/src/backend.ts'
 $firewallRuleName = "YoreBot pinned model smoke $([guid]::NewGuid())"
 $serverProcess = $null
+$agentTestProcess = $null
+$agentTestExecutable = ''
+$agentTestStdout = ''
+$agentTestStderr = ''
+$networkAudit = $null
+$agentObservedServers = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $createdWorkRoot = $false
 
 function Get-StringField {
@@ -81,6 +89,79 @@ function Get-AvailableDiskBytes {
         throw "Cannot resolve drive for acceptance root: $Path"
     }
     return [int64]([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
+}
+
+function Get-ProcessesAtExactPath {
+    param([Parameter(Mandatory)][string] $Path)
+
+    $canonicalPath = [System.IO.Path]::GetFullPath($Path)
+    return @(
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            try {
+                [System.IO.Path]::GetFullPath($_.Path) -ieq $canonicalPath
+            } catch {
+                $false
+            }
+        }
+    )
+}
+
+function Resolve-AgentAcceptanceExecutable {
+    param([Parameter(Mandatory)][string] $OutputPath)
+
+    Push-Location $projectRoot
+    try {
+        $cargoLines = @(
+            & cargo test `
+                --manifest-path src-tauri/Cargo.toml `
+                --lib `
+                --features test-tauri `
+                --no-run `
+                --message-format=json-render-diagnostics 2>&1
+        )
+        $cargoExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    @($cargoLines | ForEach-Object { [string]$_ }) |
+        Set-Content -LiteralPath $OutputPath
+    if ($cargoExitCode -ne 0) {
+        Get-Content -LiteralPath $OutputPath -Tail 120
+        throw "Agent acceptance compile exited $cargoExitCode"
+    }
+
+    $executables = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $cargoLines) {
+        try { $message = ([string]$line) | ConvertFrom-Json -Depth 40 } catch { continue }
+        $reasonProperty = $message.PSObject.Properties['reason']
+        $executableProperty = $message.PSObject.Properties['executable']
+        $profileProperty = $message.PSObject.Properties['profile']
+        $targetProperty = $message.PSObject.Properties['target']
+        if ($null -eq $reasonProperty -or
+            $reasonProperty.Value -ne 'compiler-artifact' -or
+            $null -eq $executableProperty -or
+            [string]::IsNullOrWhiteSpace($executableProperty.Value) -or
+            $null -eq $profileProperty -or
+            $null -eq $targetProperty) {
+            continue
+        }
+        $testProperty = $profileProperty.Value.PSObject.Properties['test']
+        $kindProperty = $targetProperty.Value.PSObject.Properties['kind']
+        if ($null -ne $testProperty -and
+            $testProperty.Value -eq $true -and
+            $null -ne $kindProperty -and
+            @($kindProperty.Value) -contains 'lib') {
+            $executables.Add([System.IO.Path]::GetFullPath(
+                [string]$executableProperty.Value
+            ))
+        }
+    }
+    $unique = @($executables | Sort-Object -Unique)
+    if ($unique.Count -ne 1 -or
+        -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
+        throw "Expected one compiled Agent acceptance executable, found $($unique.Count)"
+    }
+    return $unique[0]
 }
 
 function Get-PinnedModel {
@@ -210,8 +291,85 @@ try {
     if ($servers.Count -ne 1) { throw "Expected one llama-server.exe, found $($servers.Count)" }
     $serverPath = $servers[0].FullName
 
-    # Downloads and integrity checks are complete. From this point onward the
-    # exact server executable is denied outbound network access.
+    if ($RunDownloadsAgentAcceptance) {
+        $cargoOutput = Join-Path $workRootFull 'agent-acceptance.compile.log'
+        $agentTestExecutable = Resolve-AgentAcceptanceExecutable -OutputPath $cargoOutput
+
+        # All declared downloads, integrity checks, and compilation are
+        # complete. The exact Agent and server executables are now unable to
+        # reach any non-loopback address, and WFP records every attempt.
+        $networkAudit = Start-YoreBotNetworkAudit `
+            -WorkRoot $workRootFull `
+            -Name 'YoreBot Downloads Agent privacy'
+        Add-YoreBotNetworkAuditProgram `
+            -State $networkAudit `
+            -Path $serverPath `
+            -Role 'owned-llama-server' | Out-Null
+        Add-YoreBotNetworkAuditProgram `
+            -State $networkAudit `
+            -Path $agentTestExecutable `
+            -Role 'agent-acceptance' | Out-Null
+
+        $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
+        $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
+        $env:ATOMIC_AGENT_E2E_MODEL_ID = $model.Id
+        $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
+        $agentTestStdout = Join-Path $workRootFull 'agent-acceptance.stdout.log'
+        $agentTestStderr = Join-Path $workRootFull 'agent-acceptance.stderr.log'
+        $agentTestProcess = Start-Process `
+            -FilePath $agentTestExecutable `
+            -WorkingDirectory (Join-Path $projectRoot 'src-tauri') `
+            -ArgumentList @(
+                'core::agent::model_e2e::downloads_agent_acceptance',
+                '--ignored',
+                '--nocapture',
+                '--test-threads=1'
+            ) `
+            -RedirectStandardOutput $agentTestStdout `
+            -RedirectStandardError $agentTestStderr `
+            -PassThru
+        Watch-YoreBotNetworkProcess `
+            -State $networkAudit `
+            -Process $agentTestProcess `
+            -Path $agentTestExecutable `
+            -Role 'agent-acceptance'
+
+        $seenServerIds = [System.Collections.Generic.HashSet[int]]::new()
+        $agentDeadline = [DateTime]::UtcNow.AddMinutes(45)
+        do {
+            foreach ($candidate in @(Get-ProcessesAtExactPath -Path $serverPath)) {
+                if ($seenServerIds.Add($candidate.Id)) {
+                    Watch-YoreBotNetworkProcess `
+                        -State $networkAudit `
+                        -Process $candidate `
+                        -Path $serverPath `
+                        -Role 'owned-llama-server'
+                    $agentObservedServers.Add($candidate)
+                }
+            }
+            $agentTestProcess.Refresh()
+            if ($agentTestProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+        } while ([DateTime]::UtcNow -lt $agentDeadline)
+        if (-not $agentTestProcess.HasExited) {
+            Stop-Process -Id $agentTestProcess.Id -Force -ErrorAction SilentlyContinue
+            throw 'Downloads Agent acceptance exceeded its bounded deadline'
+        }
+        if ($seenServerIds.Count -eq 0) {
+            throw 'Downloads Agent acceptance never started the exact owned llama-server'
+        }
+        Get-Content -LiteralPath $agentTestStdout -Tail 300 -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $agentTestStderr -Tail 120 -ErrorAction SilentlyContinue
+        if ($agentTestProcess.ExitCode -ne 0) {
+            throw "Downloads Agent acceptance exited $($agentTestProcess.ExitCode)"
+        }
+        Assert-YoreBotNetworkAudit -State $networkAudit
+        Write-Host "Pinned Downloads Agent acceptance passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
+        return
+    }
+
+    # The lightweight response smoke retains its existing exact server-only
+    # firewall boundary. The real Agent path above adds process attribution.
     New-NetFirewallRule `
         -DisplayName $firewallRuleName `
         -Direction Outbound `
@@ -223,29 +381,6 @@ try {
         $rule.Direction.ToString() -ne 'Outbound' -or
         $rule.Action.ToString() -ne 'Block') {
         throw 'Outbound firewall rule is not active for llama-server'
-    }
-
-    if ($RunDownloadsAgentAcceptance) {
-        $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
-        $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
-        $env:ATOMIC_AGENT_E2E_MODEL_ID = $model.Id
-        $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
-        Push-Location $projectRoot
-        try {
-            & cargo test `
-                --manifest-path src-tauri/Cargo.toml `
-                --lib `
-                --features test-tauri `
-                core::agent::model_e2e::downloads_agent_acceptance `
-                -- `
-                --ignored `
-                --nocapture `
-                --test-threads=1
-        } finally {
-            Pop-Location
-        }
-        Write-Host "Pinned Downloads Agent acceptance passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
-        return
     }
 
     $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -312,15 +447,34 @@ try {
     if (-not $serverProcess.WaitForExit(30000)) { throw 'llama-server did not stop' }
     Write-Host "Pinned model response smoke passed on loopback: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
 } catch {
+    if (-not [string]::IsNullOrWhiteSpace($agentTestStdout)) {
+        Get-Content -LiteralPath $agentTestStdout -Tail 300 -ErrorAction SilentlyContinue
+    }
+    if (-not [string]::IsNullOrWhiteSpace($agentTestStderr)) {
+        Get-Content -LiteralPath $agentTestStderr -Tail 120 -ErrorAction SilentlyContinue
+    }
     if (Test-Path -LiteralPath $stderrPath) {
         Write-Host 'llama-server stderr tail:'
         Get-Content -LiteralPath $stderrPath -Tail 80
     }
     throw
 } finally {
+    if ($null -ne $agentTestProcess -and -not $agentTestProcess.HasExited) {
+        Stop-Process -Id $agentTestProcess.Id -Force -ErrorAction SilentlyContinue
+        $agentTestProcess.WaitForExit(30000) | Out-Null
+    }
+    foreach ($observedServer in $agentObservedServers) {
+        if (-not $observedServer.HasExited) {
+            Stop-Process -Id $observedServer.Id -Force -ErrorAction SilentlyContinue
+            $observedServer.WaitForExit(30000) | Out-Null
+        }
+    }
     if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
         Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
         $serverProcess.WaitForExit(30000) | Out-Null
+    }
+    if ($null -ne $networkAudit) {
+        Stop-YoreBotNetworkAudit -State $networkAudit
     }
     Remove-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
     if ($createdWorkRoot -and (Test-Path -LiteralPath $workRootFull)) {
