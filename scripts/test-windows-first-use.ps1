@@ -25,6 +25,7 @@ $installSibling = Join-Path $workRootFull 'YoreBotTools'
 $dataSibling = Join-Path $env:APPDATA "YoreBotTools-$([guid]::NewGuid().ToString('N'))"
 $appPath = Join-Path $installRoot "$($defaultRun.Groups[1].Value).exe"
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
+$cleanupHelperPath = Join-Path $installRoot 'resources/stop-yorebot-owned-processes.ps1'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\YoreBot'
 $dataRoot = Join-Path $env:APPDATA 'YoreBot/data'
 $configRoot = Join-Path $env:APPDATA 'app.yorebot.desktop'
@@ -551,7 +552,7 @@ try {
     ) -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
     $installed = $true
-    foreach ($required in @($appPath, $uninstallerPath)) {
+    foreach ($required in @($appPath, $uninstallerPath, $cleanupHelperPath)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Installer did not create required file: $required"
         }

@@ -314,16 +314,17 @@ Append-only. Newest at top. Each entry follows this shape:
   `llama-server` running after silent uninstall because the inline NSIS
   PowerShell command ignored cleanup failures.
 - **Decision:** Bundle one Windows PowerShell helper through Tauri and invoke
-  it after install/reinstall and before uninstall. Stop only `llama-server`,
-  Bun, and uv processes whose
+  it after install/reinstall and before uninstall. Resolve executable paths
+  cross-bitness with `QueryFullProcessImageNameW`; stop the exact installed
+  YoreBot main executable first, then only `llama-server`, Bun, and uv whose
   canonical executable is equal to or below the exact YoreBot install or
-  default data root; abort before file removal if cleanup fails. Run the same
-  helper after reinstall, before auto-launch, so it can reap a backend left by
-  an older version.
+  default data root. Abort before file removal if cleanup fails. Run the same
+  helper after reinstall, before auto-launch, so it can reap an older backend.
 - **Consequences:** Uninstall and upgrade cannot silently leave a known
-  YoreBot-owned helper alive. Prefix siblings and unrelated same-name
-  processes remain outside the cleanup boundary; custom data folders remain
-  outside this existing NSIS policy.
+  YoreBot-owned main process or helper alive, including when 32-bit NSIS starts
+  Windows PowerShell against a 64-bit backend. Prefix siblings and unrelated
+  same-name processes remain outside the cleanup boundary; custom data folders
+  remain outside this existing NSIS policy.
 - **Owner:** team.
 - **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
   [`src-tauri/resources/stop-yorebot-owned-processes.ps1`](src-tauri/resources/stop-yorebot-owned-processes.ps1),

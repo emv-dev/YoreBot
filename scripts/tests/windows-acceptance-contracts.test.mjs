@@ -270,9 +270,10 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     'cleanup helper must be bundled through the Tauri resource manifest',
   )
   assert.match(hooks, /-File "\$INSTDIR\\resources\\stop-yorebot-owned-processes\.ps1"/)
+  assert.match(hooks, /-MainExecutable "\$INSTDIR\\\$\{MAINBINARYNAME\}\.exe"/)
   assert.doesNotMatch(hooks, /-File "\$INSTDIR\\stop-yorebot-owned-processes\.ps1"/)
-  assert.match(hooks, /!macro NSIS_HOOK_POSTINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
-  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.match(hooks, /!macro NSIS_HOOK_POSTINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_PROCESSES/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_PROCESSES/)
   assert.doesNotMatch(hooks, /\bFile\s+\/oname=/)
   assert.doesNotMatch(hooks, /\$PLUGINSDIR\\YoreBotStopOwnedProcesses/)
   const preuninstall = hooks.slice(
@@ -280,9 +281,12 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     hooks.indexOf('!macroend', hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL')),
   )
   assert.doesNotMatch(preuninstall, /SetOutPath "\$INSTDIR"/)
+  assert.match(cleanup, /QueryFullProcessImageNameW/)
+  assert.match(cleanup, /ProcessQueryLimitedInformation = 0x1000/)
+  assert.match(cleanup, /Get-Process -Name \$mainProcessName/)
   assert.match(cleanup, /Get-Process -Name llama-server,bun,uv/)
   assert.match(cleanup, /Stop-Process -Id/)
-  assert.match(cleanup, /WaitForExit\(15000\)/)
+  assert.match(cleanup, /\[DateTime\]::UtcNow\.AddSeconds\(15\)/)
   assert.match(cleanup, /\.StartsWith\([\s\S]*\[System\.StringComparison\]::OrdinalIgnoreCase/)
   assert.doesNotMatch(cleanup, /Stop-Process\s+-Name/i)
   assert.doesNotMatch(cleanup, /taskkill/i)
@@ -290,11 +294,14 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     "'YoreBotTools'",
     "'Roaming/YoreBotBackup'",
     "'OtherApp'",
+    "-Name 'Atomic-Chat'",
     "-Name 'llama-server'",
     "-Name 'bun'",
     "-Name 'uv'",
     "'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'",
     '-File $cleanupScript',
+    '-MainExecutable $mainExecutable',
+    'engine_bits=32 main_stopped=$ExpectedMain helpers_stopped=$ExpectedHelpers remaining=0',
     'Invoke-Cleanup',
     'Owned helper survived uninstall cleanup',
     'Older-version orphan survived reinstall cleanup',
@@ -302,7 +309,12 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   ]) {
     assert.ok(cleanupTest.includes(value), `missing cleanup regression: ${value}`)
   }
+  assert.ok(
+    cleanup.indexOf('$mainVictims =') < cleanup.indexOf('$helperVictims ='),
+    'the exact main app must be stopped before its owned helpers',
+  )
   assert.match(workflow, /\.\/scripts\/test-windows-uninstall-cleanup\.ps1/)
+  assert.match(script, /resources\/stop-yorebot-owned-processes\.ps1/)
 })
 
 test('model smoke verifies both downloads before an exact outbound block and loopback request', () => {
@@ -455,6 +467,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     'sizeBytes: 5_680_522_464',
     '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8',
     'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64',
+    'resources/stop-yorebot-owned-processes.ps1',
     'llamacpp-upstream/backends/b10431/win-cpu-x64',
     'llamacpp-upstream/backends/b10431/win-vulkan-x64',
     'Active Chat runtime did not report exact build 10431',

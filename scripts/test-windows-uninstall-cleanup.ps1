@@ -10,6 +10,7 @@ $windowsPowerShell = Join-Path $env:SystemRoot 'SysWOW64/WindowsPowerShell/v1.0/
 $fixtureRoot = Join-Path $env:RUNNER_TEMP "yorebot-uninstall-cleanup-$([guid]::NewGuid().ToString('N'))"
 $installRoot = Join-Path $fixtureRoot 'YoreBot'
 $dataRoot = Join-Path $fixtureRoot 'Roaming/YoreBot'
+$mainExecutable = Join-Path $installRoot 'Atomic-Chat.exe'
 $installSibling = Join-Path $fixtureRoot 'YoreBotTools'
 $dataSibling = Join-Path $fixtureRoot 'Roaming/YoreBotBackup'
 $unrelatedRoot = Join-Path $fixtureRoot 'OtherApp'
@@ -24,9 +25,10 @@ function Start-Sentinel {
 
     New-Item -ItemType Directory -Path $Directory -Force | Out-Null
     $path = Join-Path $Directory "$Name.exe"
-    Copy-Item -LiteralPath $env:ComSpec -Destination $path
+    $source = Join-Path $env:SystemRoot 'System32/ping.exe'
+    Copy-Item -LiteralPath $source -Destination $path
     $process = Start-Process -FilePath $path -ArgumentList @(
-        '/d', '/q', '/c', 'ping.exe -n 600 127.0.0.1 > nul'
+        '-n', '600', '127.0.0.1'
     ) -PassThru
     Start-Sleep -Milliseconds 500
     if ($process.HasExited) { throw "$Name sentinel exited early" }
@@ -38,6 +40,11 @@ function Start-Sentinel {
 }
 
 function Invoke-Cleanup {
+    param(
+        [Parameter(Mandatory)] [int] $ExpectedMain,
+        [Parameter(Mandatory)] [int] $ExpectedHelpers
+    )
+
     $output = & $windowsPowerShell `
         -NoLogo `
         -NoProfile `
@@ -45,23 +52,30 @@ function Invoke-Cleanup {
         -ExecutionPolicy Bypass `
         -File $cleanupScript `
         -InstallRoot $installRoot `
-        -DataRoot $dataRoot 2>&1
+        -DataRoot $dataRoot `
+        -MainExecutable $mainExecutable 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Windows PowerShell cleanup exited $LASTEXITCODE`: $($output -join ' ')"
+    }
+    $expected = "engine_bits=32 main_stopped=$ExpectedMain helpers_stopped=$ExpectedHelpers remaining=0"
+    if (-not ($output -join "`n").Contains($expected)) {
+        throw "Windows PowerShell cleanup omitted its exact result: $expected"
     }
     $output | ForEach-Object { Write-Host $_ }
 }
 
 try {
+    $owned.Add((Start-Sentinel -Directory $installRoot -Name 'Atomic-Chat'))
     $owned.Add((Start-Sentinel -Directory $dataRoot -Name 'llama-server'))
     $owned.Add((Start-Sentinel -Directory $installRoot -Name 'bun'))
     $owned.Add((Start-Sentinel -Directory (Join-Path $installRoot 'resources') -Name 'uv'))
 
     $protected.Add((Start-Sentinel -Directory $installSibling -Name 'llama-server'))
+    $protected.Add((Start-Sentinel -Directory $installSibling -Name 'Atomic-Chat'))
     $protected.Add((Start-Sentinel -Directory $dataSibling -Name 'bun'))
     $protected.Add((Start-Sentinel -Directory $unrelatedRoot -Name 'uv'))
 
-    Invoke-Cleanup
+    Invoke-Cleanup -ExpectedMain 1 -ExpectedHelpers 3
 
     foreach ($process in $owned) {
         $process.Refresh()
@@ -73,7 +87,7 @@ try {
     # Model an upgrade from a version whose uninstaller left its backend alive.
     $upgradeOrphan = Start-Sentinel -Directory $dataRoot -Name 'llama-server'
     $owned.Add($upgradeOrphan)
-    Invoke-Cleanup
+    Invoke-Cleanup -ExpectedMain 0 -ExpectedHelpers 1
     $upgradeOrphan.Refresh()
     if (-not $upgradeOrphan.HasExited) {
         throw "Older-version orphan survived reinstall cleanup: PID $($upgradeOrphan.Id)"

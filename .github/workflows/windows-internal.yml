@@ -148,7 +148,9 @@ jobs:
             "-ieq",
             ".StartsWith(",
             "[char]92",
-            "[System.StringComparison]::OrdinalIgnoreCase"
+            "[System.StringComparison]::OrdinalIgnoreCase",
+            "QueryFullProcessImageNameW",
+            "ProcessQueryLimitedInformation"
           )) {
             if (-not ($cleanup.Contains($required))) {
               throw "Uninstaller boundary guard is missing: $required"
