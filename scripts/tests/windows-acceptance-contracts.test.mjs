@@ -447,9 +447,19 @@ test('real Chat and Agent work run inside one restored process-attributed networ
     'Get-CdpNetworkUriDiagnostic',
     'WebView2 Network sensor did not observe the expected loopback health request',
     "$uri.AbsolutePath -cne '/health'",
+    'WebView2 loopback health calibration failed',
   ]) {
     assert.ok(firstUse.includes(value), `missing WebView2 network guard: ${value}`)
   }
+  assert.match(
+    firstUse,
+    /'Network\.enable'[\s\S]*fetch\('http:\/\/127\.0\.0\.1:\$healthPort\/health'[\s\S]*response\.ok[\s\S]*WebView2 loopback health calibration failed[\s\S]*\$baselineReplyValue/
+  )
+  const calibration = firstUse.slice(
+    firstUse.indexOf("'Network.enable'"),
+    firstUse.indexOf('$baselineReplyValue')
+  )
+  assert.equal((calibration.match(/\bfetch\(/g) ?? []).length, 1)
   assert.doesNotMatch(firstUse, /SkipExistingConnectionCheck/)
   assert.match(firstUse, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
 

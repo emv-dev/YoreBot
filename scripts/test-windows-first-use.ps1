@@ -918,6 +918,16 @@ JSON.stringify({
     $script:CaptureCdpNetwork = $true
     Invoke-CdpCommand -Socket $cdpSocket -Method 'Network.enable' | Out-Null
 
+    $healthPort = [int]$listeners[0].LocalPort
+    $webViewHealthOk = Invoke-CdpExpression -Socket $cdpSocket -Expression @"
+fetch('http://127.0.0.1:$healthPort/health')
+  .then((response) => response.ok)
+  .catch(() => false)
+"@
+    if (-not $webViewHealthOk) {
+        throw 'WebView2 loopback health calibration failed'
+    }
+
     $baselineReplyValue = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
 document.querySelectorAll('[aria-label="YoreBot response"]').length
 '@
