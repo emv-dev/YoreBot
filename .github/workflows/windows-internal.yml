@@ -267,6 +267,13 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::denied_mutations_leave_the_workspace_and_desktop_unchanged -- --test-threads=1
           cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-tauri core::agent::tools::contract_tests::filesystem_move_is_non_overwriting_and_reversible -- --test-threads=1
 
+      - name: Verify real Agent acceptance resolver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/test-windows-pinned-model.ps1 -ValidateCargoResolverOnly
+
       - name: Build unsigned internal NSIS installer
         shell: pwsh
         run: yarn tauri build --debug --bundles nsis --ci

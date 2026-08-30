@@ -11,6 +11,8 @@ param(
 
     [switch] $ValidateCargoParserOnly,
 
+    [switch] $ValidateCargoResolverOnly,
+
     [switch] $RunDownloadsAgentAcceptance
 )
 
@@ -112,6 +114,7 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $CargoLines)
 
     $executables = [System.Collections.Generic.List[string]]::new()
+    $artifactDiagnostics = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $cargoLines) {
         try {
             $decoded = ([string]$line) | ConvertFrom-Json -AsHashtable -Depth 40
@@ -129,17 +132,56 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
             if ($null -eq $message -or
                 $message -isnot [System.Collections.IDictionary] -or
                 -not $message.Contains('reason') -or
-                $message['reason'] -ne 'compiler-artifact' -or
-                -not $message.Contains('executable') -or
-                [string]::IsNullOrWhiteSpace([string]$message['executable']) -or
-                -not $message.Contains('profile') -or
-                $message['profile'] -isnot [System.Collections.IDictionary] -or
-                -not $message.Contains('target') -or
-                $message['target'] -isnot [System.Collections.IDictionary]) {
+                $message['reason'] -ne 'compiler-artifact') {
                 continue
             }
-            $profile = $message['profile']
-            $target = $message['target']
+
+            $profile = if ($message.Contains('profile') -and
+                $message['profile'] -is [System.Collections.IDictionary]) {
+                $message['profile']
+            } else { $null }
+            $target = if ($message.Contains('target') -and
+                $message['target'] -is [System.Collections.IDictionary]) {
+                $message['target']
+            } else { $null }
+            $executable = if ($message.Contains('executable')) {
+                [string]$message['executable']
+            } else { '' }
+            $executablePresent = -not [string]::IsNullOrWhiteSpace($executable)
+            $executableBasename = if ($executablePresent) {
+                try { [System.IO.Path]::GetFileName($executable) } catch { '<invalid>' }
+            } else { '<missing>' }
+            $executableExists = $executablePresent -and
+                (Test-Path -LiteralPath $executable -PathType Leaf)
+            $targetName = if ($null -ne $target -and $target.Contains('name')) {
+                [string]$target['name']
+            } else { '<missing>' }
+            $targetKind = if ($null -ne $target -and $target.Contains('kind')) {
+                @($target['kind']) -join ','
+            } else { '<missing>' }
+            $targetCrateTypes = if ($null -ne $target -and
+                $target.Contains('crate_types')) {
+                @($target['crate_types']) -join ','
+            } else { '<missing>' }
+            $targetTest = if ($null -ne $target -and $target.Contains('test')) {
+                [string]$target['test']
+            } else { '<missing>' }
+            $profileTest = if ($null -ne $profile -and $profile.Contains('test')) {
+                [string]$profile['test']
+            } else { '<missing>' }
+            $summary = "target_name=$targetName target_kind=$targetKind " +
+                "target_crate_types=$targetCrateTypes target_test=$targetTest " +
+                "profile_test=$profileTest executable_basename=$executableBasename " +
+                "executable_present=$executablePresent executable_exists=$executableExists"
+            $summary = [regex]::Replace($summary, '[^\x20-\x7E]', '?')
+            if ($summary.Length -gt 512) { $summary = $summary.Substring(0, 512) }
+            $artifactDiagnostics.Add($summary)
+
+            if (-not $executablePresent -or
+                $null -eq $profile -or
+                $null -eq $target) {
+                continue
+            }
             if (-not $profile.Contains('test') -or
                 $profile['test'] -isnot [bool] -or
                 $profile['test'] -ne $true -or
@@ -155,6 +197,12 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
     $unique = @($executables | Sort-Object -Unique)
     if ($unique.Count -ne 1 -or
         -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
+        $shown = @($artifactDiagnostics | Select-Object -First 40)
+        Write-Host "Cargo compiler-artifact diagnostics: count=$($artifactDiagnostics.Count) shown=$($shown.Count)"
+        foreach ($summary in $shown) { Write-Host "Cargo compiler-artifact: $summary" }
+        if ($artifactDiagnostics.Count -gt $shown.Count) {
+            Write-Host "Cargo compiler-artifact diagnostics truncated: hidden=$($artifactDiagnostics.Count - $shown.Count)"
+        }
         throw "Expected one compiled Agent acceptance executable, found $($unique.Count)"
     }
     return $unique[0]
@@ -280,6 +328,22 @@ function Test-AgentAcceptanceExecutableParser {
 
 if ($ValidateCargoParserOnly) {
     Test-AgentAcceptanceExecutableParser
+    return
+}
+
+if ($ValidateCargoResolverOnly) {
+    $resolverRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+        "yorebot-cargo-resolver-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $resolverRoot | Out-Null
+    try {
+        $cargoOutput = Join-Path $resolverRoot 'cargo-output.log'
+        $resolved = Resolve-AgentAcceptanceExecutable -OutputPath $cargoOutput
+        Write-Host "Agent Cargo resolver passed: executable=$([System.IO.Path]::GetFileName($resolved)) result=pass"
+    } finally {
+        if (Test-Path -LiteralPath $resolverRoot) {
+            [System.IO.Directory]::Delete($resolverRoot, $true)
+        }
+    }
     return
 }
 

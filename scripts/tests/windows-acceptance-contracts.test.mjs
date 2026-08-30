@@ -77,6 +77,7 @@ test('Agent executable resolution handles Cargo JSON shapes and fails closed', (
 
   assert.match(workflow, /test-windows-pinned-model\.ps1 -ValidateCargoParserOnly/)
   assert.match(script, /\[switch\] \$ValidateCargoParserOnly/)
+  assert.match(script, /\[switch\] \$ValidateCargoResolverOnly/)
   assert.match(script, /ConvertFrom-Json -AsHashtable -Depth 40/)
   assert.doesNotMatch(
     script.slice(
@@ -93,6 +94,29 @@ test('Agent executable resolution handles Cargo JSON shapes and fails closed', (
   ]) {
     assert.ok(script.includes(fixture), `missing Cargo parser fixture: ${fixture}`)
   }
+  for (const field of [
+    'target_name=',
+    'target_kind=',
+    'target_crate_types=',
+    'target_test=',
+    'profile_test=',
+    'executable_basename=',
+    'executable_present=',
+    'executable_exists=',
+  ]) {
+    assert.ok(script.includes(field), `Cargo diagnostic omits ${field}`)
+  }
+  assert.match(script, /Cargo compiler-artifact diagnostics: count=/)
+  assert.match(script, /Select-Object -First 40/)
+
+  const productSeams = workflow.indexOf('- name: Test product seams')
+  const resolver = workflow.indexOf('- name: Verify real Agent acceptance resolver')
+  const installer = workflow.indexOf('- name: Build unsigned internal NSIS installer')
+  assert.ok(productSeams >= 0 && resolver > productSeams && installer > resolver)
+  assert.match(
+    workflow.slice(resolver, installer),
+    /test-windows-pinned-model\.ps1 -ValidateCargoResolverOnly/
+  )
 })
 
 test('manual Windows proof selects the largest exact fit and fails before downloads', () => {
