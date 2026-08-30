@@ -23,10 +23,11 @@
 ; is NOT covered by these hooks — the user is responsible for cleaning it.
 
 !macro YOREBOT_STOP_OWNED_HELPERS
-  ; Invoke the one helper that Tauri bundles at the install root. It stops only
-  ; exact-name helpers whose canonical executable path is equal to or below the
-  ; exact install/data roots. Prefix siblings remain untouched.
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\stop-yorebot-owned-processes.ps1" -InstallRoot "$INSTDIR" -DataRoot "$APPDATA\YoreBot"'
+  ; Invoke the one helper that Tauri bundles under its Windows resources
+  ; directory. It stops only exact-name helpers whose canonical executable
+  ; path is equal to or below the exact install/data roots. Prefix siblings
+  ; remain untouched.
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\stop-yorebot-owned-processes.ps1" -InstallRoot "$INSTDIR" -DataRoot "$APPDATA\YoreBot"'
   Pop $0
   Pop $1
   ${If} $0 != 0

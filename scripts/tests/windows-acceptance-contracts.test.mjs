@@ -269,7 +269,8 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
     ),
     'cleanup helper must be bundled through the Tauri resource manifest',
   )
-  assert.match(hooks, /-File "\$INSTDIR\\stop-yorebot-owned-processes\.ps1"/)
+  assert.match(hooks, /-File "\$INSTDIR\\resources\\stop-yorebot-owned-processes\.ps1"/)
+  assert.doesNotMatch(hooks, /-File "\$INSTDIR\\stop-yorebot-owned-processes\.ps1"/)
   assert.match(hooks, /!macro NSIS_HOOK_POSTINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
   assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
   assert.doesNotMatch(hooks, /\bFile\s+\/oname=/)
