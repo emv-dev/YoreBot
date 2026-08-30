@@ -3,9 +3,11 @@ import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 import { getSignedReleaseUrl } from "../app/signed-release-url.mjs";
+import { getSocialImageUrl } from "../app/social-image-url.mjs";
 
-async function render(releaseUrl) {
+async function render(releaseUrl, requestUrl = "http://localhost/", extraHeaders = {}) {
   const previous = process.env.YOREBOT_SIGNED_RELEASE_URL;
+  const request = new URL(requestUrl);
 
   if (releaseUrl === undefined) {
     delete process.env.YOREBOT_SIGNED_RELEASE_URL;
@@ -19,8 +21,14 @@ async function render(releaseUrl) {
     const { default: worker } = await import(workerUrl.href);
 
     return await worker.fetch(
-      new Request("http://localhost/", {
-        headers: { accept: "text/html" },
+      new Request(request, {
+        headers: {
+          accept: "text/html",
+          host: request.host,
+          "x-forwarded-host": request.host,
+          "x-forwarded-proto": request.protocol.slice(0, -1),
+          ...extraHeaders,
+        },
       }),
       {
         ASSETS: {
@@ -39,6 +47,17 @@ async function render(releaseUrl) {
       process.env.YOREBOT_SIGNED_RELEASE_URL = previous;
     }
   }
+}
+
+function metaContent(html, attribute, value) {
+  const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tag = html.match(
+    new RegExp(
+      `<meta(?=[^>]*\\b${attribute}=["']${escapedValue}["'])[^>]*>`,
+      "i",
+    ),
+  )?.[0];
+  return tag?.match(/\bcontent=["']([^"']*)["']/i)?.[1] ?? null;
 }
 
 test("unconfigured site renders one simple route and no download link", async () => {
@@ -139,6 +158,97 @@ test("approval preview depicts exactly one move mutation", async () => {
   assert.equal((sourceCard.match(/<p>/g) ?? []).length, 1);
   assert.match(sourceCard, /<p>Move<\/p>/);
   assert.doesNotMatch(sourceCard, /Create folder|Downloads \/ Documents/);
+});
+
+test("root social metadata matches the page and uses only the request-host card", async () => {
+  const response = await render(undefined, "https://preview.yorebot.test/");
+  const html = await response.text();
+  const title = html.match(/<title>([^<]+)<\/title>/i)?.[1] ?? null;
+  const description = metaContent(html, "name", "description");
+  const imageUrl = "https://preview.yorebot.test/og.png";
+
+  assert.equal(title, "YoreBot | Private help on your computer");
+  assert.equal(
+    description,
+    "Private local chat and a Downloads organizer that asks before changing files.",
+  );
+  assert.equal(metaContent(html, "property", "og:title"), title);
+  assert.equal(metaContent(html, "property", "og:description"), description);
+  assert.equal(metaContent(html, "name", "twitter:title"), title);
+  assert.equal(metaContent(html, "name", "twitter:description"), description);
+  assert.equal(metaContent(html, "name", "twitter:card"), "summary_large_image");
+  assert.equal(metaContent(html, "property", "og:image"), imageUrl);
+  assert.equal(metaContent(html, "name", "twitter:image"), imageUrl);
+  assert.equal((html.match(/property="og:image"/g) ?? []).length, 1);
+  assert.equal((html.match(/name="twitter:image"/g) ?? []).length, 1);
+
+  const image = await readFile(new URL("../public/og.png", import.meta.url));
+  assert.ok(image.length > 100_000);
+  assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.ok(image.readUInt32BE(16) >= 1_200);
+  assert.ok(image.readUInt32BE(20) >= 630);
+});
+
+test("ambiguous forwarded hosts omit social images instead of using a fallback", async () => {
+  const response = await render(undefined, "https://preview.yorebot.test/", {
+    "x-forwarded-host": "attacker.example, preview.yorebot.test",
+  });
+  const html = await response.text();
+  assert.equal(metaContent(html, "property", "og:image"), null);
+  assert.equal(metaContent(html, "name", "twitter:image"), null);
+  assert.doesNotMatch(html, /starter|placeholder|fallback-og/i);
+});
+
+test("conflicting valid host headers emit no rendered social image", async () => {
+  const response = await render(undefined, "https://preview.yorebot.test/", {
+    "x-forwarded-host": "attacker.example",
+  });
+  const html = await response.text();
+  assert.equal(metaContent(html, "property", "og:image"), null);
+  assert.equal(metaContent(html, "name", "twitter:image"), null);
+});
+
+test("social image hosts agree canonically or fail closed", () => {
+  assert.equal(
+    getSocialImageUrl({
+      host: "PREVIEW.YOREBOT.TEST:443",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "preview.yorebot.test",
+      forwardedHost: null,
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: null,
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "preview.yorebot.test:444",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    null,
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "invalid host",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    null,
+  );
 });
 
 test("starter preview and remote asset remnants are absent", async () => {
