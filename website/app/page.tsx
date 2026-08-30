@@ -56,7 +56,7 @@ export default function Home() {
               <div className="signing-status" role="status">
                 <span className="status-mark" aria-hidden="true" />
                 <span>
-                  <strong>Windows release is being signed.</strong>
+                  <strong>Windows release is being prepared.</strong>
                   The download will appear here when it is ready.
                 </span>
               </div>
@@ -73,11 +73,9 @@ export default function Home() {
               <p className="demo-label">Downloads</p>
               <div className="message user-message">Organize this folder.</div>
               <div className="message bot-message">
-                I found one document. Here is the exact change:
+                I found one document. Here is the exact move:
               </div>
               <div className="approval-card">
-                <p>Create folder</p>
-                <strong>Downloads / Documents</strong>
                 <p>Move</p>
                 <strong>invoice.pdf → Documents / invoice.pdf</strong>
                 <div className="approval-actions" aria-hidden="true">
@@ -87,7 +85,7 @@ export default function Home() {
               </div>
             </div>
             <figcaption>
-              You see exactly what will change before YoreBot can change it.
+              You see the exact move before YoreBot can make it.
             </figcaption>
           </figure>
         </section>
@@ -122,7 +120,7 @@ export default function Home() {
           <p>
             {signedReleaseUrl
               ? "Use the download above to get YoreBot."
-              : "We are signing the Windows release before offering it here."}
+              : "We are preparing the Windows release before offering it here."}
           </p>
         </section>
       </main>

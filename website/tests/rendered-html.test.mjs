@@ -52,7 +52,8 @@ test("unconfigured site renders one simple route and no download link", async ()
   assert.match(html, /Chat privately/);
   assert.match(html, /Organize Downloads/);
   assert.match(html, /approve the exact change/i);
-  assert.match(html, /Windows release is being signed/i);
+  assert.match(html, /Windows release is being prepared/i);
+  assert.doesNotMatch(visibleHtml, /being signed|we are signing/i);
   assert.doesNotMatch(html, /<a[^>]*>[^<]*Download for Windows/i);
   assert.doesNotMatch(html, /(?:href|src)=["']https?:\/\//i);
   assert.doesNotMatch(
@@ -82,7 +83,7 @@ test("valid signed installer URL is preserved exactly and becomes the only downl
   );
   assert.match(html, />Download for Windows/);
   assert.equal((html.match(/class="primary-action"/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /Windows release is being signed/i);
+  assert.doesNotMatch(html, /Windows release is being prepared/i);
 });
 
 test("invalid or ambiguous release URLs fail closed", async () => {
@@ -114,7 +115,30 @@ test("invalid or ambiguous release URLs fail closed", async () => {
   const response = await render("https://downloads.example.com/YoreBot-setup.exe");
   const html = await response.text();
   assert.doesNotMatch(html, /<a[^>]*>[^<]*Download for Windows/i);
-  assert.match(html, /Windows release is being signed/i);
+  assert.match(html, /Windows release is being prepared/i);
+  assert.doesNotMatch(html, /being signed|we are signing/i);
+});
+
+test("approval preview depicts exactly one move mutation", async () => {
+  const response = await render(undefined);
+  const html = await response.text();
+  const renderedCard = html.match(
+    /<div class="approval-card">([\s\S]*?)<div class="approval-actions"/,
+  )?.[1];
+  assert.ok(renderedCard);
+  assert.equal((renderedCard.match(/<p>/g) ?? []).length, 1);
+  assert.match(renderedCard, /<p>Move<\/p>/);
+  assert.match(renderedCard, /invoice\.pdf → Documents \/ invoice\.pdf/);
+  assert.doesNotMatch(renderedCard, /Create folder/);
+
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const cardStart = page.indexOf('<div className="approval-card">');
+  const cardEnd = page.indexOf('<div className="approval-actions"', cardStart);
+  assert.ok(cardStart >= 0 && cardEnd > cardStart);
+  const sourceCard = page.slice(cardStart, cardEnd);
+  assert.equal((sourceCard.match(/<p>/g) ?? []).length, 1);
+  assert.match(sourceCard, /<p>Move<\/p>/);
+  assert.doesNotMatch(sourceCard, /Create folder|Downloads \/ Documents/);
 });
 
 test("starter preview and remote asset remnants are absent", async () => {
