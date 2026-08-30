@@ -262,8 +262,14 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   assert.match(hooks, /stop-yorebot-owned-processes\.ps1/)
   assert.match(hooks, /nsExec::ExecToStack/)
   assert.match(hooks, /SetErrorLevel 1[\s\S]*Quit/)
-  assert.match(hooks, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
-  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.match(hooks, /!macro YOREBOT_STOP_OWNED_HELPERS FINAL_OUTDIR[\s\S]*SetOutPath "\$\{FINAL_OUTDIR\}"/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS "\$INSTDIR"/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS "\$PLUGINSDIR"/)
+  const preuninstall = hooks.slice(
+    hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL'),
+    hooks.indexOf('!macroend', hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL')),
+  )
+  assert.doesNotMatch(preuninstall, /SetOutPath "\$INSTDIR"/)
   assert.match(cleanup, /Get-Process -Name llama-server,bun,uv/)
   assert.match(cleanup, /Stop-Process -Id/)
   assert.match(cleanup, /WaitForExit\(15000\)/)
