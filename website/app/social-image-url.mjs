@@ -40,8 +40,19 @@ export function getSocialImageUrl({ forwardedHost, host, forwardedProto }) {
     return null;
   }
 
-  // A present but ambiguous proxy header fails closed instead of falling back
-  // to a different host and silently publishing the wrong absolute URL.
-  const requestHost = safeRequestHost(forwardedHost ?? host);
+  const forwardedPresent = forwardedHost !== null && forwardedHost !== undefined;
+  const hostPresent = host !== null && host !== undefined;
+  const forwarded = forwardedPresent ? safeRequestHost(forwardedHost) : null;
+  const direct = hostPresent ? safeRequestHost(host) : null;
+
+  if (
+    (forwardedPresent && !forwarded) ||
+    (hostPresent && !direct) ||
+    (forwardedPresent && hostPresent && forwarded !== direct)
+  ) {
+    return null;
+  }
+
+  const requestHost = forwarded ?? direct;
   return requestHost ? `https://${requestHost}/og.png` : null;
 }

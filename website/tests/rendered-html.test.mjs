@@ -3,6 +3,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 import { getSignedReleaseUrl } from "../app/signed-release-url.mjs";
+import { getSocialImageUrl } from "../app/social-image-url.mjs";
 
 async function render(releaseUrl, requestUrl = "http://localhost/", extraHeaders = {}) {
   const previous = process.env.YOREBOT_SIGNED_RELEASE_URL;
@@ -196,6 +197,58 @@ test("ambiguous forwarded hosts omit social images instead of using a fallback",
   assert.equal(metaContent(html, "property", "og:image"), null);
   assert.equal(metaContent(html, "name", "twitter:image"), null);
   assert.doesNotMatch(html, /starter|placeholder|fallback-og/i);
+});
+
+test("conflicting valid host headers emit no rendered social image", async () => {
+  const response = await render(undefined, "https://preview.yorebot.test/", {
+    "x-forwarded-host": "attacker.example",
+  });
+  const html = await response.text();
+  assert.equal(metaContent(html, "property", "og:image"), null);
+  assert.equal(metaContent(html, "name", "twitter:image"), null);
+});
+
+test("social image hosts agree canonically or fail closed", () => {
+  assert.equal(
+    getSocialImageUrl({
+      host: "PREVIEW.YOREBOT.TEST:443",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "preview.yorebot.test",
+      forwardedHost: null,
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: null,
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    "https://preview.yorebot.test/og.png",
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "preview.yorebot.test:444",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    null,
+  );
+  assert.equal(
+    getSocialImageUrl({
+      host: "invalid host",
+      forwardedHost: "preview.yorebot.test",
+      forwardedProto: "https",
+    }),
+    null,
+  );
 });
 
 test("starter preview and remote asset remnants are absent", async () => {
