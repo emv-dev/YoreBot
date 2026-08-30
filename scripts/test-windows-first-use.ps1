@@ -319,6 +319,9 @@ function Test-CdpNetworkUrlIsLocal {
         return $true
     }
     if ($uri.Scheme -notin @('http', 'https', 'ws', 'wss')) { return $false }
+    if ($uri.Host -ieq 'ipc.localhost') {
+        return $uri.Scheme -eq 'http' -and $uri.Port -eq 80
+    }
     if ($uri.Host -iin @('localhost', 'tauri.localhost', 'asset.localhost')) {
         return $true
     }

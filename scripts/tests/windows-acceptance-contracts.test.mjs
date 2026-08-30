@@ -453,6 +453,15 @@ test('real Chat and Agent work run inside one restored process-attributed networ
   }
   assert.match(
     firstUse,
+    /if \(\$uri\.Host -ieq 'ipc\.localhost'\) \{[\s\S]*?\$uri\.Scheme -eq 'http'[\s\S]*?\$uri\.Port -eq 80[\s\S]*?\}/,
+    'the Tauri IPC origin must remain exact http://ipc.localhost:80'
+  )
+  assert.match(
+    firstUse,
+    /\$uri\.Host -iin @\('localhost', 'tauri\.localhost', 'asset\.localhost'\)/
+  )
+  assert.match(
+    firstUse,
     /'Network\.enable'[\s\S]*fetch\('http:\/\/127\.0\.0\.1:\$healthPort\/health'[\s\S]*response\.ok[\s\S]*WebView2 loopback health calibration failed[\s\S]*\$baselineReplyValue/
   )
   const calibration = firstUse.slice(
@@ -719,7 +728,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
     '--autoplay-policy=no-user-gesture-required',
     '--proxy-server=http://127.0.0.1:9',
-    '--proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost',
+    '--proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost,ipc.localhost',
   ]) {
     assert.ok(shippingBrowserArgs.includes(value), `shipping WebView omits ${value}`)
   }
