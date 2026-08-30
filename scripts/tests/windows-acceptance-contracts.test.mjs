@@ -210,9 +210,10 @@ test('disabled public updater is not registered during desktop startup', () => {
 test('installer smoke owns exact processes and protects prefix siblings', () => {
   const script = read('scripts/test-windows-installer.ps1')
   const hooks = read('src-tauri/windows/hooks.nsh')
-  const cleanup = read('src-tauri/windows/stop-yorebot-owned-processes.ps1')
+  const cleanup = read('src-tauri/resources/stop-yorebot-owned-processes.ps1')
   const cleanupTest = read('scripts/test-windows-uninstall-cleanup.ps1')
   const workflow = read('.github/workflows/windows-internal.yml')
+  const windowsConfig = JSON.parse(read('src-tauri/tauri.windows.conf.json'))
 
   for (const value of [
     "'YoreBotTools'",
@@ -262,9 +263,17 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   assert.match(hooks, /stop-yorebot-owned-processes\.ps1/)
   assert.match(hooks, /nsExec::ExecToStack/)
   assert.match(hooks, /SetErrorLevel 1[\s\S]*Quit/)
-  assert.match(hooks, /!macro YOREBOT_STOP_OWNED_HELPERS FINAL_OUTDIR[\s\S]*SetOutPath "\$\{FINAL_OUTDIR\}"/)
-  assert.match(hooks, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS "\$INSTDIR"/)
-  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS "\$PLUGINSDIR"/)
+  assert.ok(
+    windowsConfig.bundle.resources.includes(
+      'resources/stop-yorebot-owned-processes.ps1',
+    ),
+    'cleanup helper must be bundled through the Tauri resource manifest',
+  )
+  assert.match(hooks, /-File "\$INSTDIR\\stop-yorebot-owned-processes\.ps1"/)
+  assert.match(hooks, /!macro NSIS_HOOK_POSTINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.doesNotMatch(hooks, /\bFile\s+\/oname=/)
+  assert.doesNotMatch(hooks, /\$PLUGINSDIR\\YoreBotStopOwnedProcesses/)
   const preuninstall = hooks.slice(
     hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL'),
     hooks.indexOf('!macroend', hooks.indexOf('!macro NSIS_HOOK_PREUNINSTALL')),

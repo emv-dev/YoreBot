@@ -313,18 +313,20 @@ Append-only. Newest at top. Each entry follows this shape:
 - **Context:** A fresh installed Chat turn left its exact data-root
   `llama-server` running after silent uninstall because the inline NSIS
   PowerShell command ignored cleanup failures.
-- **Decision:** Extract one Windows PowerShell helper into both install and
-  uninstall hooks. Stop only `llama-server`, Bun, and uv processes whose
+- **Decision:** Bundle one Windows PowerShell helper through Tauri and invoke
+  it after install/reinstall and before uninstall. Stop only `llama-server`,
+  Bun, and uv processes whose
   canonical executable is equal to or below the exact YoreBot install or
   default data root; abort before file removal if cleanup fails. Run the same
-  helper before reinstall so it can reap a backend left by an older version.
+  helper after reinstall, before auto-launch, so it can reap a backend left by
+  an older version.
 - **Consequences:** Uninstall and upgrade cannot silently leave a known
   YoreBot-owned helper alive. Prefix siblings and unrelated same-name
   processes remain outside the cleanup boundary; custom data folders remain
   outside this existing NSIS policy.
 - **Owner:** team.
 - **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
-  [`src-tauri/windows/stop-yorebot-owned-processes.ps1`](src-tauri/windows/stop-yorebot-owned-processes.ps1),
+  [`src-tauri/resources/stop-yorebot-owned-processes.ps1`](src-tauri/resources/stop-yorebot-owned-processes.ps1),
   [`src-tauri/windows/hooks.nsh`](src-tauri/windows/hooks.nsh).
 
 ### 2026-08-30 — Skip discovery HEAD for integrity-pinned downloads

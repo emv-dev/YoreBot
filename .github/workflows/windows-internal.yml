@@ -137,7 +137,7 @@ jobs:
           }
 
           $hooks = Get-Content "src-tauri/windows/hooks.nsh" -Raw
-          $cleanup = Get-Content "src-tauri/windows/stop-yorebot-owned-processes.ps1" -Raw
+          $cleanup = Get-Content "src-tauri/resources/stop-yorebot-owned-processes.ps1" -Raw
           foreach ($forbidden in @('$INSTDIR*', '$APPDATA\YoreBot*')) {
             if (($hooks + $cleanup).Contains($forbidden)) {
               throw "Unsafe uninstaller prefix match remains: $forbidden"

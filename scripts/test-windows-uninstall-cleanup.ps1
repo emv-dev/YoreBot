@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 $projectRoot = Split-Path $PSScriptRoot
-$cleanupScript = Join-Path $projectRoot 'src-tauri/windows/stop-yorebot-owned-processes.ps1'
+$cleanupScript = Join-Path $projectRoot 'src-tauri/resources/stop-yorebot-owned-processes.ps1'
 $fixtureRoot = Join-Path $env:RUNNER_TEMP "yorebot-uninstall-cleanup-$([guid]::NewGuid().ToString('N'))"
 $installRoot = Join-Path $fixtureRoot 'YoreBot'
 $dataRoot = Join-Path $fixtureRoot 'Roaming/YoreBot'
