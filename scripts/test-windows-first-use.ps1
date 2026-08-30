@@ -307,7 +307,7 @@ function Invoke-CdpCommand {
     } | ConvertTo-Json -Depth 30 -Compress
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     $segment = [System.ArraySegment[byte]]::new($bytes)
-    $Socket.SendAsync(
+    [void] $Socket.SendAsync(
         $segment,
         [System.Net.WebSockets.WebSocketMessageType]::Text,
         $true,
@@ -473,7 +473,7 @@ function Connect-YoreBotWebView {
 
         $socket = [System.Net.WebSockets.ClientWebSocket]::new()
         try {
-            $socket.ConnectAsync(
+            [void] $socket.ConnectAsync(
                 $uri,
                 [System.Threading.CancellationToken]::None
             ).GetAwaiter().GetResult()

@@ -441,6 +441,16 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     /\$socket = \[System\.Net\.WebSockets\.ClientWebSocket\]::new\(\)[\s\S]*?try \{[\s\S]*?\.ConnectAsync\([\s\S]*?\} catch \{[\s\S]*?\$socket\.Dispose\(\)/,
     'a failed CDP WebSocket handshake must dispose its owned socket before retrying'
   )
+  assert.match(
+    connect,
+    /\[void\]\s+\$socket\.ConnectAsync\(/,
+    'a successful CDP handshake must not leak VoidTaskResult into the function output'
+  )
+  assert.match(
+    script,
+    /function Invoke-CdpCommand[\s\S]*?\[void\]\s+\$Socket\.SendAsync\([\s\S]*?return Receive-CdpMessage/,
+    'sending a CDP command must not leak VoidTaskResult ahead of its response'
+  )
   assert.match(connect, /\$firstSocketError = ''/)
   assert.match(connect, /WebView2 first WebSocket diagnostic:/)
   assert.match(connect, /WebView2 target diagnostic:/)
