@@ -107,7 +107,8 @@ test('Agent executable resolution handles Cargo JSON shapes and fails closed', (
     assert.ok(script.includes(field), `Cargo diagnostic omits ${field}`)
   }
   assert.match(script, /Cargo compiler-artifact diagnostics: count=/)
-  assert.match(script, /Select-Object -First 40/)
+  assert.match(script, /\$executablePresent -or \$targetName -ceq 'app_lib'/)
+  assert.match(script, /Select-Object -Last 40/)
 
   const productSeams = workflow.indexOf('- name: Test product seams')
   const resolver = workflow.indexOf('- name: Verify real Agent acceptance resolver')

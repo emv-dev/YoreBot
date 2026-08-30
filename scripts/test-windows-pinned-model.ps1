@@ -115,6 +115,7 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
 
     $executables = [System.Collections.Generic.List[string]]::new()
     $artifactDiagnostics = [System.Collections.Generic.List[string]]::new()
+    $priorityDiagnostics = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $cargoLines) {
         try {
             $decoded = ([string]$line) | ConvertFrom-Json -AsHashtable -Depth 40
@@ -176,6 +177,9 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
             $summary = [regex]::Replace($summary, '[^\x20-\x7E]', '?')
             if ($summary.Length -gt 512) { $summary = $summary.Substring(0, 512) }
             $artifactDiagnostics.Add($summary)
+            if ($executablePresent -or $targetName -ceq 'app_lib') {
+                $priorityDiagnostics.Add($summary)
+            }
 
             if (-not $executablePresent -or
                 $null -eq $profile -or
@@ -197,8 +201,11 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
     $unique = @($executables | Sort-Object -Unique)
     if ($unique.Count -ne 1 -or
         -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
-        $shown = @($artifactDiagnostics | Select-Object -First 40)
-        Write-Host "Cargo compiler-artifact diagnostics: count=$($artifactDiagnostics.Count) shown=$($shown.Count)"
+        $diagnosticSource = if ($priorityDiagnostics.Count -gt 0) {
+            $priorityDiagnostics
+        } else { $artifactDiagnostics }
+        $shown = @($diagnosticSource | Select-Object -Last 40)
+        Write-Host "Cargo compiler-artifact diagnostics: count=$($artifactDiagnostics.Count) prioritized=$($priorityDiagnostics.Count) shown=$($shown.Count)"
         foreach ($summary in $shown) { Write-Host "Cargo compiler-artifact: $summary" }
         if ($artifactDiagnostics.Count -gt $shown.Count) {
             Write-Host "Cargo compiler-artifact diagnostics truncated: hidden=$($artifactDiagnostics.Count - $shown.Count)"
