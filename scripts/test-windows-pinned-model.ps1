@@ -9,6 +9,10 @@ param(
 
     [switch] $ValidateManifestOnly,
 
+    [switch] $ValidateCargoParserOnly,
+
+    [switch] $ValidateCargoResolverOnly,
+
     [switch] $RunDownloadsAgentAcceptance
 )
 
@@ -16,11 +20,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+. (Join-Path $PSScriptRoot 'windows-network-audit.ps1')
+
 $projectRoot = Split-Path $PSScriptRoot
 $modelManifestPath = Join-Path $projectRoot 'web-app/src/constants/yorebot-models.ts'
 $backendManifestPath = Join-Path $projectRoot 'extensions/llamacpp-upstream-extension/src/backend.ts'
 $firewallRuleName = "YoreBot pinned model smoke $([guid]::NewGuid())"
 $serverProcess = $null
+$agentTestProcess = $null
+$agentTestExecutable = ''
+$agentTestStdout = ''
+$agentTestStderr = ''
+$networkAudit = $null
+$agentObservedServers = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $createdWorkRoot = $false
 
 function Get-StringField {
@@ -81,6 +93,321 @@ function Get-AvailableDiskBytes {
         throw "Cannot resolve drive for acceptance root: $Path"
     }
     return [int64]([System.IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
+}
+
+function Get-ProcessesAtExactPath {
+    param([Parameter(Mandatory)][string] $Path)
+
+    $canonicalPath = [System.IO.Path]::GetFullPath($Path)
+    return @(
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            try {
+                [System.IO.Path]::GetFullPath($_.Path) -ieq $canonicalPath
+            } catch {
+                $false
+            }
+        }
+    )
+}
+
+function Resolve-AgentAcceptanceExecutableFromCargoLines {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $CargoLines)
+
+    $executables = [System.Collections.Generic.List[string]]::new()
+    $artifactDiagnostics = [System.Collections.Generic.List[string]]::new()
+    $priorityDiagnostics = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $cargoLines) {
+        try {
+            $decoded = ([string]$line) | ConvertFrom-Json -AsHashtable -Depth 40
+        } catch {
+            continue
+        }
+
+        $messages = [System.Collections.Generic.List[object]]::new()
+        if ($decoded -is [System.Array]) {
+            foreach ($entry in $decoded) { $messages.Add($entry) }
+        } else {
+            $messages.Add($decoded)
+        }
+        foreach ($message in $messages) {
+            if ($null -eq $message -or
+                $message -isnot [System.Collections.IDictionary] -or
+                -not $message.Contains('reason') -or
+                $message['reason'] -ne 'compiler-artifact') {
+                continue
+            }
+
+            $profile = if ($message.Contains('profile') -and
+                $message['profile'] -is [System.Collections.IDictionary]) {
+                $message['profile']
+            } else { $null }
+            $target = if ($message.Contains('target') -and
+                $message['target'] -is [System.Collections.IDictionary]) {
+                $message['target']
+            } else { $null }
+            $executable = if ($message.Contains('executable')) {
+                [string]$message['executable']
+            } else { '' }
+            $executablePresent = -not [string]::IsNullOrWhiteSpace($executable)
+            $executableBasename = if ($executablePresent) {
+                try { [System.IO.Path]::GetFileName($executable) } catch { '<invalid>' }
+            } else { '<missing>' }
+            $executableExists = $executablePresent -and
+                (Test-Path -LiteralPath $executable -PathType Leaf)
+            $targetName = if ($null -ne $target -and $target.Contains('name')) {
+                [string]$target['name']
+            } else { '<missing>' }
+            $targetKind = if ($null -ne $target -and $target.Contains('kind')) {
+                @($target['kind']) -join ','
+            } else { '<missing>' }
+            $targetCrateTypes = if ($null -ne $target -and
+                $target.Contains('crate_types')) {
+                @($target['crate_types']) -join ','
+            } else { '<missing>' }
+            $targetTest = if ($null -ne $target -and $target.Contains('test')) {
+                [string]$target['test']
+            } else { '<missing>' }
+            $profileTest = if ($null -ne $profile -and $profile.Contains('test')) {
+                [string]$profile['test']
+            } else { '<missing>' }
+            $summary = "target_name=$targetName target_kind=$targetKind " +
+                "target_crate_types=$targetCrateTypes target_test=$targetTest " +
+                "profile_test=$profileTest executable_basename=$executableBasename " +
+                "executable_present=$executablePresent executable_exists=$executableExists"
+            $summary = [regex]::Replace($summary, '[^\x20-\x7E]', '?')
+            if ($summary.Length -gt 512) { $summary = $summary.Substring(0, 512) }
+            $artifactDiagnostics.Add($summary)
+            if ($executablePresent -or $targetName -ceq 'app_lib') {
+                $priorityDiagnostics.Add($summary)
+            }
+
+            if (-not $executableExists -or
+                $null -eq $profile -or
+                $null -eq $target) {
+                continue
+            }
+            if (-not $profile.Contains('test') -or
+                $profile['test'] -isnot [bool] -or
+                $profile['test'] -ne $true -or
+                -not $target.Contains('name') -or
+                [string]$target['name'] -cne 'app_lib' -or
+                -not $target.Contains('test') -or
+                $target['test'] -isnot [bool] -or
+                $target['test'] -ne $true) {
+                continue
+            }
+            $executables.Add([System.IO.Path]::GetFullPath(
+                [string]$message['executable']
+            ))
+        }
+    }
+    $unique = @($executables | Sort-Object -Unique)
+    if ($unique.Count -ne 1 -or
+        -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
+        $diagnosticSource = if ($priorityDiagnostics.Count -gt 0) {
+            $priorityDiagnostics
+        } else { $artifactDiagnostics }
+        $shown = @($diagnosticSource | Select-Object -Last 40)
+        Write-Host "Cargo compiler-artifact diagnostics: count=$($artifactDiagnostics.Count) prioritized=$($priorityDiagnostics.Count) shown=$($shown.Count)"
+        foreach ($summary in $shown) { Write-Host "Cargo compiler-artifact: $summary" }
+        if ($artifactDiagnostics.Count -gt $shown.Count) {
+            Write-Host "Cargo compiler-artifact diagnostics truncated: hidden=$($artifactDiagnostics.Count - $shown.Count)"
+        }
+        throw "Expected one compiled Agent acceptance executable, found $($unique.Count)"
+    }
+    return $unique[0]
+}
+
+function Resolve-AgentAcceptanceExecutable {
+    param([Parameter(Mandatory)][string] $OutputPath)
+
+    Push-Location $projectRoot
+    try {
+        $cargoLines = @(
+            & cargo test `
+                --manifest-path src-tauri/Cargo.toml `
+                --lib `
+                --features test-tauri `
+                --no-run `
+                --message-format=json-render-diagnostics 2>&1
+        )
+        $cargoExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    @($cargoLines | ForEach-Object { [string]$_ }) |
+        Set-Content -LiteralPath $OutputPath
+    if ($cargoExitCode -ne 0) {
+        Get-Content -LiteralPath $OutputPath -Tail 120
+        throw "Agent acceptance compile exited $cargoExitCode"
+    }
+    return Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines $cargoLines
+}
+
+function Test-AgentAcceptanceExecutableParser {
+    $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+        "yorebot-cargo-parser-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+    try {
+        $firstExecutable = Join-Path $fixtureRoot 'agent-one.exe'
+        $secondExecutable = Join-Path $fixtureRoot 'agent-two.exe'
+        New-Item -ItemType File -Path $firstExecutable | Out-Null
+        New-Item -ItemType File -Path $secondExecutable | Out-Null
+
+        $validArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $firstExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
+        }
+        $otherArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $false }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
+        }
+        $binArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'Atomic-Chat'
+                kind = @('bin')
+                crate_types = @('bin')
+                test = $true
+            }
+        }
+        $dependencyArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'dependency_lib'
+                kind = @('lib')
+                crate_types = @('lib')
+                test = $true
+            }
+        }
+        $nonTestTargetArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $false
+            }
+        }
+        $duplicateArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
+        }
+
+        $singleLines = @(
+            'not JSON',
+            'null',
+            '42',
+            (ConvertTo-Json -InputObject $validArtifact -Compress -Depth 10)
+        )
+        $single = Resolve-AgentAcceptanceExecutableFromCargoLines `
+            -CargoLines $singleLines
+        if ($single -cne [System.IO.Path]::GetFullPath($firstExecutable)) {
+            throw 'single Cargo compiler-artifact fixture selected the wrong executable'
+        }
+        Write-Host 'Cargo parser fixture passed: single Cargo compiler-artifact'
+
+        $mixedLines = @(
+            (ConvertTo-Json -InputObject ([ordered]@{ reason = 'build-finished' }) `
+                -Compress -Depth 10),
+            (ConvertTo-Json -InputObject @(
+                $otherArtifact,
+                $validArtifact,
+                $binArtifact,
+                $dependencyArtifact,
+                $nonTestTargetArtifact
+            ) `
+                -Compress -Depth 10)
+        )
+        $mixed = Resolve-AgentAcceptanceExecutableFromCargoLines `
+            -CargoLines $mixedLines
+        if ($mixed -cne [System.IO.Path]::GetFullPath($firstExecutable)) {
+            throw 'mixed Cargo compiler-artifacts fixture selected the wrong executable'
+        }
+        Write-Host 'Cargo parser fixture passed: mixed Cargo compiler-artifacts'
+
+        try {
+            Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines @(
+                ConvertTo-Json -InputObject @(
+                    $otherArtifact,
+                    $binArtifact,
+                    $dependencyArtifact,
+                    $nonTestTargetArtifact
+                ) -Compress -Depth 10
+            ) | Out-Null
+            throw 'zero matching Cargo compiler-artifacts fixture unexpectedly passed'
+        } catch {
+            if (-not $_.Exception.Message.Contains(
+                'Expected one compiled Agent acceptance executable, found 0'
+            )) { throw }
+        }
+        Write-Host 'Cargo parser fixture passed: zero matching Cargo compiler-artifacts'
+
+        try {
+            Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines @(
+                (ConvertTo-Json -InputObject $validArtifact -Compress -Depth 10),
+                (ConvertTo-Json -InputObject $duplicateArtifact -Compress -Depth 10)
+            ) | Out-Null
+            throw 'multiple matching Cargo compiler-artifacts fixture unexpectedly passed'
+        } catch {
+            if (-not $_.Exception.Message.Contains(
+                'Expected one compiled Agent acceptance executable, found 2'
+            )) { throw }
+        }
+        Write-Host 'Cargo parser fixture passed: multiple matching Cargo compiler-artifacts'
+    } finally {
+        if (Test-Path -LiteralPath $fixtureRoot) {
+            [System.IO.Directory]::Delete($fixtureRoot, $true)
+        }
+    }
+}
+
+if ($ValidateCargoParserOnly) {
+    Test-AgentAcceptanceExecutableParser
+    return
+}
+
+if ($ValidateCargoResolverOnly) {
+    $resolverRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+        "yorebot-cargo-resolver-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $resolverRoot | Out-Null
+    try {
+        $cargoOutput = Join-Path $resolverRoot 'cargo-output.log'
+        $resolved = Resolve-AgentAcceptanceExecutable -OutputPath $cargoOutput
+        Write-Host "Agent Cargo resolver passed: executable=$([System.IO.Path]::GetFileName($resolved)) result=pass"
+    } finally {
+        if (Test-Path -LiteralPath $resolverRoot) {
+            [System.IO.Directory]::Delete($resolverRoot, $true)
+        }
+    }
+    return
 }
 
 function Get-PinnedModel {
@@ -210,8 +537,85 @@ try {
     if ($servers.Count -ne 1) { throw "Expected one llama-server.exe, found $($servers.Count)" }
     $serverPath = $servers[0].FullName
 
-    # Downloads and integrity checks are complete. From this point onward the
-    # exact server executable is denied outbound network access.
+    if ($RunDownloadsAgentAcceptance) {
+        $cargoOutput = Join-Path $workRootFull 'agent-acceptance.compile.log'
+        $agentTestExecutable = Resolve-AgentAcceptanceExecutable -OutputPath $cargoOutput
+
+        # All declared downloads, integrity checks, and compilation are
+        # complete. The exact Agent and server executables are now unable to
+        # reach any non-loopback address, and WFP records every attempt.
+        $networkAudit = Start-YoreBotNetworkAudit `
+            -WorkRoot $workRootFull `
+            -Name 'YoreBot Downloads Agent privacy'
+        Add-YoreBotNetworkAuditProgram `
+            -State $networkAudit `
+            -Path $serverPath `
+            -Role 'owned-llama-server' | Out-Null
+        Add-YoreBotNetworkAuditProgram `
+            -State $networkAudit `
+            -Path $agentTestExecutable `
+            -Role 'agent-acceptance' | Out-Null
+
+        $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
+        $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
+        $env:ATOMIC_AGENT_E2E_MODEL_ID = $model.Id
+        $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
+        $agentTestStdout = Join-Path $workRootFull 'agent-acceptance.stdout.log'
+        $agentTestStderr = Join-Path $workRootFull 'agent-acceptance.stderr.log'
+        $agentTestProcess = Start-Process `
+            -FilePath $agentTestExecutable `
+            -WorkingDirectory (Join-Path $projectRoot 'src-tauri') `
+            -ArgumentList @(
+                'core::agent::model_e2e::downloads_agent_acceptance',
+                '--ignored',
+                '--nocapture',
+                '--test-threads=1'
+            ) `
+            -RedirectStandardOutput $agentTestStdout `
+            -RedirectStandardError $agentTestStderr `
+            -PassThru
+        Watch-YoreBotNetworkProcess `
+            -State $networkAudit `
+            -Process $agentTestProcess `
+            -Path $agentTestExecutable `
+            -Role 'agent-acceptance'
+
+        $seenServerIds = [System.Collections.Generic.HashSet[int]]::new()
+        $agentDeadline = [DateTime]::UtcNow.AddMinutes(45)
+        do {
+            foreach ($candidate in @(Get-ProcessesAtExactPath -Path $serverPath)) {
+                if ($seenServerIds.Add($candidate.Id)) {
+                    Watch-YoreBotNetworkProcess `
+                        -State $networkAudit `
+                        -Process $candidate `
+                        -Path $serverPath `
+                        -Role 'owned-llama-server'
+                    $agentObservedServers.Add($candidate)
+                }
+            }
+            $agentTestProcess.Refresh()
+            if ($agentTestProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+        } while ([DateTime]::UtcNow -lt $agentDeadline)
+        if (-not $agentTestProcess.HasExited) {
+            Stop-Process -Id $agentTestProcess.Id -Force -ErrorAction SilentlyContinue
+            throw 'Downloads Agent acceptance exceeded its bounded deadline'
+        }
+        if ($seenServerIds.Count -eq 0) {
+            throw 'Downloads Agent acceptance never started the exact owned llama-server'
+        }
+        Get-Content -LiteralPath $agentTestStdout -Tail 300 -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $agentTestStderr -Tail 120 -ErrorAction SilentlyContinue
+        if ($agentTestProcess.ExitCode -ne 0) {
+            throw "Downloads Agent acceptance exited $($agentTestProcess.ExitCode)"
+        }
+        Assert-YoreBotNetworkAudit -State $networkAudit
+        Write-Host "Pinned Downloads Agent acceptance passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
+        return
+    }
+
+    # The lightweight response smoke retains its existing exact server-only
+    # firewall boundary. The real Agent path above adds process attribution.
     New-NetFirewallRule `
         -DisplayName $firewallRuleName `
         -Direction Outbound `
@@ -223,29 +627,6 @@ try {
         $rule.Direction.ToString() -ne 'Outbound' -or
         $rule.Action.ToString() -ne 'Block') {
         throw 'Outbound firewall rule is not active for llama-server'
-    }
-
-    if ($RunDownloadsAgentAcceptance) {
-        $env:ATOMIC_AGENT_E2E_LLAMA_SERVER = $serverPath
-        $env:ATOMIC_AGENT_E2E_MODEL = $modelPath
-        $env:ATOMIC_AGENT_E2E_MODEL_ID = $model.Id
-        $env:ATOMIC_AGENT_E2E_TIMEOUT_SECS = '900'
-        Push-Location $projectRoot
-        try {
-            & cargo test `
-                --manifest-path src-tauri/Cargo.toml `
-                --lib `
-                --features test-tauri `
-                core::agent::model_e2e::downloads_agent_acceptance `
-                -- `
-                --ignored `
-                --nocapture `
-                --test-threads=1
-        } finally {
-            Pop-Location
-        }
-        Write-Host "Pinned Downloads Agent acceptance passed: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
-        return
     }
 
     $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -312,15 +693,34 @@ try {
     if (-not $serverProcess.WaitForExit(30000)) { throw 'llama-server did not stop' }
     Write-Host "Pinned model response smoke passed on loopback: profile=$HardwareProfile memory_mb=$profileMemoryMb model_id=$($model.Id) result=pass"
 } catch {
+    if (-not [string]::IsNullOrWhiteSpace($agentTestStdout)) {
+        Get-Content -LiteralPath $agentTestStdout -Tail 300 -ErrorAction SilentlyContinue
+    }
+    if (-not [string]::IsNullOrWhiteSpace($agentTestStderr)) {
+        Get-Content -LiteralPath $agentTestStderr -Tail 120 -ErrorAction SilentlyContinue
+    }
     if (Test-Path -LiteralPath $stderrPath) {
         Write-Host 'llama-server stderr tail:'
         Get-Content -LiteralPath $stderrPath -Tail 80
     }
     throw
 } finally {
+    if ($null -ne $agentTestProcess -and -not $agentTestProcess.HasExited) {
+        Stop-Process -Id $agentTestProcess.Id -Force -ErrorAction SilentlyContinue
+        $agentTestProcess.WaitForExit(30000) | Out-Null
+    }
+    foreach ($observedServer in $agentObservedServers) {
+        if (-not $observedServer.HasExited) {
+            Stop-Process -Id $observedServer.Id -Force -ErrorAction SilentlyContinue
+            $observedServer.WaitForExit(30000) | Out-Null
+        }
+    }
     if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
         Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
         $serverProcess.WaitForExit(30000) | Out-Null
+    }
+    if ($null -ne $networkAudit) {
+        Stop-YoreBotNetworkAudit -State $networkAudit
     }
     Remove-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
     if ($createdWorkRoot -and (Test-Path -LiteralPath $workRootFull)) {

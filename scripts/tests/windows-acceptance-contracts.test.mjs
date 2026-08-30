@@ -71,6 +71,61 @@ test('ordinary and high-end Windows models and CPU runtime remain exactly pinned
   }
 })
 
+test('Agent executable resolution handles Cargo JSON shapes and fails closed', () => {
+  const script = read('scripts/test-windows-pinned-model.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  assert.match(workflow, /test-windows-pinned-model\.ps1 -ValidateCargoParserOnly/)
+  assert.match(script, /\[switch\] \$ValidateCargoParserOnly/)
+  assert.match(script, /\[switch\] \$ValidateCargoResolverOnly/)
+  assert.match(script, /ConvertFrom-Json -AsHashtable -Depth 40/)
+  assert.doesNotMatch(
+    script.slice(
+      script.indexOf('function Resolve-AgentAcceptanceExecutableFromCargoLines'),
+      script.indexOf('\nfunction Resolve-AgentAcceptanceExecutable {')
+    ),
+    /\.PSObject\.Properties/
+  )
+  for (const fixture of [
+    'single Cargo compiler-artifact',
+    'mixed Cargo compiler-artifacts',
+    'zero matching Cargo compiler-artifacts',
+    'multiple matching Cargo compiler-artifacts',
+  ]) {
+    assert.ok(script.includes(fixture), `missing Cargo parser fixture: ${fixture}`)
+  }
+  for (const field of [
+    'target_name=',
+    'target_kind=',
+    'target_crate_types=',
+    'target_test=',
+    'profile_test=',
+    'executable_basename=',
+    'executable_present=',
+    'executable_exists=',
+  ]) {
+    assert.ok(script.includes(field), `Cargo diagnostic omits ${field}`)
+  }
+  assert.match(script, /Cargo compiler-artifact diagnostics: count=/)
+  assert.match(script, /\$executablePresent -or \$targetName -ceq 'app_lib'/)
+  assert.match(script, /Select-Object -Last 40/)
+  assert.match(script, /\[string\]\$target\['name'\] -cne 'app_lib'/)
+  assert.match(script, /\$target\['test'\] -isnot \[bool\]/)
+  assert.match(script, /\$target\['test'\] -ne \$true/)
+  assert.match(script, /-not \$executableExists/)
+  assert.match(script, /name = 'dependency_lib'/)
+  assert.match(script, /kind = @\('staticlib', 'cdylib', 'rlib'\)/)
+
+  const productSeams = workflow.indexOf('- name: Test product seams')
+  const resolver = workflow.indexOf('- name: Verify real Agent acceptance resolver')
+  const installer = workflow.indexOf('- name: Build unsigned internal NSIS installer')
+  assert.ok(productSeams >= 0 && resolver > productSeams && installer > resolver)
+  assert.match(
+    workflow.slice(resolver, installer),
+    /test-windows-pinned-model\.ps1 -ValidateCargoResolverOnly/
+  )
+})
+
 test('manual Windows proof selects the largest exact fit and fails before downloads', () => {
   const script = read('scripts/test-windows-pinned-model.ps1')
   const workflow = read('.github/workflows/windows-internal.yml')
@@ -341,6 +396,161 @@ test('model smoke verifies both downloads before an exact outbound block and loo
   assert.doesNotMatch(script, /Stop-Process\s+-Name/i)
 })
 
+test('real Chat and Agent work run inside one restored process-attributed network audit', () => {
+  assert.ok(
+    existsSync(resolve(root, 'scripts/windows-network-audit.ps1')),
+    'the shared Windows network-audit helper is missing'
+  )
+  const audit = read('scripts/windows-network-audit.ps1')
+  const auditRegression = read('scripts/test-windows-network-audit.ps1')
+  const firstUse = read('scripts/test-windows-first-use.ps1')
+  const agent = read('scripts/test-windows-pinned-model.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  for (const value of [
+    '{0CCE9226-69AE-11D9-BED3-505054503030}',
+    'auditpol.exe /backup',
+    'auditpol.exe /set',
+    'auditpol.exe /restore',
+    'Get-WinEvent',
+    '5157',
+    'QueryDosDeviceW',
+    'ProcessId',
+    'Application',
+    'DestAddress',
+    '%%14593',
+    'New-NetFirewallRule',
+    '-Program $canonicalPath',
+    '0.0.0.0-126.255.255.255',
+    '128.0.0.0-255.255.255.255',
+    '::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+    'Remove-NetFirewallRule',
+    'Non-loopback network attempt detected',
+    '/failure:enable',
+    'Network-audited program has no observed exact-path process',
+  ]) {
+    assert.ok(audit.includes(value), `missing network-audit guard: ${value}`)
+  }
+  assert.match(audit, /Select-Object -First 20/)
+  assert.doesNotMatch(audit, /\/success:enable/)
+  assert.doesNotMatch(audit, /RemoteAddress\s+Any|Stop-Process\s+-Name/i)
+  assert.match(
+    audit,
+    /Remove-NetFirewallRule[\s\S]*?-PolicyStore ActiveStore[\s\S]*?-ErrorAction SilentlyContinue/
+  )
+  assert.match(
+    audit,
+    /Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop[\s\S]*?\.DisplayName\.StartsWith\([\s\S]*?\$State\.RulePrefix/
+  )
+
+  for (const value of [
+    'Start-YoreBotNetworkAudit',
+    'Add-YoreBotNetworkAuditProgram',
+    'Watch-YoreBotNetworkProcess',
+    'Assert-YoreBotNetworkAudit',
+    'Stop-YoreBotNetworkAudit',
+    '192.0.2.1',
+    'caught expected non-loopback attempt',
+    'audit policy was not restored',
+    "'127.255.255.255'",
+    "'::2'",
+  ]) {
+    assert.ok(
+      auditRegression.includes(value),
+      `missing live audit regression: ${value}`
+    )
+  }
+  assert.match(
+    auditRegression,
+    /Get-NetFirewallRule\s+`\s*-DisplayName \$program\.RuleName\s+`\s*-PolicyStore ActiveStore/
+  )
+  assert.match(
+    auditRegression,
+    /Remove-NetFirewallRule\s+`\s*-DisplayName \$program\.RuleName\s+`\s*-PolicyStore ActiveStore/
+  )
+  assert.equal(
+    (auditRegression.match(/Stop-YoreBotNetworkAudit -State \$audit/g) ?? [])
+      .length,
+    2,
+    'cleanup retry must be regression-tested'
+  )
+
+  const firstUseDownload = firstUse.indexOf(
+    "Get-FileHash -LiteralPath $modelPath -Algorithm SHA256"
+  )
+  const firstUseAudit = firstUse.indexOf('Start-YoreBotNetworkAudit')
+  const firstUsePrompt = firstUse.indexOf(
+    'Reply with exactly YOREBOT_CHAT_OK.'
+  )
+  const firstUseAssert = firstUse.indexOf('Assert-YoreBotNetworkAudit')
+  assert.ok(
+    firstUseDownload >= 0 &&
+      firstUseAudit > firstUseDownload &&
+      firstUsePrompt > firstUseAudit &&
+      firstUseAssert > firstUsePrompt
+  )
+  assert.match(firstUse, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$appPath/)
+  assert.match(firstUse, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/)
+  assert.match(firstUse, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$appProcess/)
+  assert.match(firstUse, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$serverProcess/)
+  for (const value of [
+    "'Network.enable'",
+    "'Network.requestWillBeSent'",
+    "'Network.webSocketCreated'",
+    'Assert-CdpNetworkAudit',
+    '$uri.IsUnc',
+    'Get-CdpNetworkUriDiagnostic',
+    'WebView2 Network sensor did not observe the expected loopback health request',
+    "$uri.AbsolutePath -cne '/health'",
+    'WebView2 loopback health calibration failed',
+  ]) {
+    assert.ok(firstUse.includes(value), `missing WebView2 network guard: ${value}`)
+  }
+  assert.match(
+    firstUse,
+    /if \(\$uri\.Host -ieq 'ipc\.localhost'\) \{[\s\S]*?\$uri\.Scheme -eq 'http'[\s\S]*?\$uri\.Port -eq 80[\s\S]*?\}/,
+    'the Tauri IPC origin must remain exact http://ipc.localhost:80'
+  )
+  assert.match(
+    firstUse,
+    /\$uri\.Host -iin @\('localhost', 'tauri\.localhost', 'asset\.localhost'\)/
+  )
+  assert.match(
+    firstUse,
+    /'Network\.enable'[\s\S]*fetch\('http:\/\/127\.0\.0\.1:\$healthPort\/health'[\s\S]*response\.ok[\s\S]*WebView2 loopback health calibration failed[\s\S]*\$baselineReplyValue/
+  )
+  const calibration = firstUse.slice(
+    firstUse.indexOf("'Network.enable'"),
+    firstUse.indexOf('$baselineReplyValue')
+  )
+  assert.equal((calibration.match(/\bfetch\(/g) ?? []).length, 1)
+  assert.doesNotMatch(firstUse, /SkipExistingConnectionCheck/)
+  assert.match(firstUse, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
+
+  const agentDownload = agent.indexOf(
+    'Assert-PinnedFile -Path $modelPath -Size $model.Size'
+  )
+  const agentAudit = agent.indexOf('Start-YoreBotNetworkAudit')
+  const agentRun = agent.indexOf(
+    'core::agent::model_e2e::downloads_agent_acceptance'
+  )
+  const agentAssert = agent.indexOf('Assert-YoreBotNetworkAudit')
+  assert.ok(
+    agentDownload >= 0 &&
+      agentAudit > agentDownload &&
+      agentRun > agentAudit &&
+      agentAssert > agentRun
+  )
+  assert.match(agent, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/)
+  assert.match(agent, /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$agentTestExecutable/)
+  assert.match(agent, /Watch-YoreBotNetworkProcess[\s\S]*-Process \$agentTestProcess/)
+  assert.match(agent, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
+
+  assert.match(workflow, /\.\/scripts\/test-windows-network-audit\.ps1/)
+  assert.match(workflow, /\.\/scripts\/test-windows-first-use\.ps1/)
+  assert.match(workflow, /-RunDownloadsAgentAcceptance/)
+})
+
 test('manual model ritual exercises the real Downloads Agent contract', () => {
   const script = read('scripts/test-windows-pinned-model.ps1')
   const harness = read('src-tauri/src/core/agent/model_e2e.rs')
@@ -454,6 +664,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   const chatInput = read('web-app/src/containers/ChatInput.tsx')
   const threadRoute = read('web-app/src/routes/threads/$threadId.tsx')
   const messages = read('web-app/src/containers/MessageItem.tsx')
+  const accessDialog = read('web-app/src/containers/dialogs/YoreBotAccessDialog.tsx')
 
   for (const value of [
     'http://127.0.0.1:',
@@ -543,7 +754,10 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(connect, /\$uriBuilder\.Host = '127\.0\.0\.1'/)
   assert.doesNotMatch(script, /^["']@\S/m)
   assert.match(script, /replies\.length > \$baselineReplyCount/)
-  assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
+  assert.match(
+    script,
+    /Add-YoreBotNetworkAuditProgram[\s\S]*-Path \$serverPath/
+  )
   assert.doesNotMatch(script, /Stop-Process\s+-Name|taskkill/i)
   assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
   assert.match(setup, /aria-label=["']YoreBot setup["']/)
@@ -552,15 +766,36 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
   assert.match(script, /\$cdpPort = 9229/)
   assert.match(script, /Assert-LoopbackPortAvailable -Port \$cdpPort/)
+  assert.match(script, /WebView2 selected target: \$lastTargetDiagnostic/)
+  assert.match(
+    script,
+    /-DiagnosticContext "parent=\$parentId command_line=\$commandLine"/
+  )
+  assert.match(
+    read('scripts/windows-network-audit.ps1'),
+    /pid=\$\(\$Process\.Id\) path=\$canonicalPath destinations=\[\$destinations\]\$contextSuffix/
+  )
   assert.doesNotMatch(script, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/)
-  for (const source of [
-    baseConfig,
-    windowsConfig,
-    releaseWorkflow,
-    signedWorkflow,
+  const configuredWindows = JSON.parse(windowsConfig)
+  assert.equal(configuredWindows.app.windows.length, 1)
+  const shippingBrowserArgs = configuredWindows.app.windows[0].additionalBrowserArgs
+  for (const value of [
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
+    '--autoplay-policy=no-user-gesture-required',
+    '--proxy-server=http://127.0.0.1:9',
+    '--proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost,ipc.localhost',
   ]) {
-    assert.doesNotMatch(source, /additionalBrowserArgs|remote-debugging-port/)
+    assert.ok(shippingBrowserArgs.includes(value), `shipping WebView omits ${value}`)
   }
+  for (const source of [baseConfig, windowsConfig, releaseWorkflow, signedWorkflow]) {
+    assert.doesNotMatch(source, /remote-debugging-(?:address|port)/)
+  }
+  assert.doesNotMatch(
+    shippingBrowserArgs,
+    /disable-web-security|ignore-certificate-errors|no-sandbox/i
+  )
+  assert.match(accessDialog, /import \{ openUrl \} from '@tauri-apps\/plugin-opener'/)
+  assert.match(accessDialog, /await openUrl\(url\)/)
   const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
   const completed = script.indexOf('$chatCompleted = $true')
   const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
@@ -606,8 +841,6 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   for (const value of [
     'src-tauri/tauri.windows.conf.json',
     'additionalBrowserArgs',
-    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
-    '--autoplay-policy=no-user-gesture-required',
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=9229',
     "@('--config', $configPath)",
@@ -615,7 +848,19 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   ]) {
     assert.ok(acceptanceBuild.includes(value), `acceptance build omits ${value}`)
   }
-  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 1)
+  assert.match(
+    acceptanceBuild,
+    /\$shippingBrowserArgs = \[string\]\$config\.app\.windows\[0\]\.additionalBrowserArgs[\s\S]*\$config\.app\.windows\[0\]\.additionalBrowserArgs = "\$shippingBrowserArgs \$testOnlyBrowserArgs"/
+  )
+  assert.match(
+    acceptanceBuild,
+    /\$testOnlyBrowserArgs = '--remote-debugging-address=127\.0\.0\.1 --remote-debugging-port=9229'/
+  )
+  assert.doesNotMatch(
+    acceptanceBuild,
+    /\$testOnlyBrowserArgs = '[^']*(?:msWebOOUI|autoplay-policy)/
+  )
+  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 2)
   assert.match(
     acceptanceBuild,
     /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'/

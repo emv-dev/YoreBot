@@ -20,7 +20,8 @@
           "effects": ["fullScreenUI", "mica", "tabbed", "blur", "acrylic"],
           "state": "active"
         },
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --proxy-server=http://127.0.0.1:9 --proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost,ipc.localhost"
       }
     ]
   },
