@@ -50,8 +50,12 @@ try {
         -State $audit `
         -Path $watchedPath `
         -Role 'agent-acceptance'
+    $rule = Get-NetFirewallRule `
+        -DisplayName $program.RuleName `
+        -PolicyStore ActiveStore `
+        -ErrorAction Stop
     $application = Get-NetFirewallApplicationFilter `
-        -AssociatedNetFirewallRule (Get-NetFirewallRule -DisplayName $program.RuleName) `
+        -AssociatedNetFirewallRule $rule `
         -ErrorAction Stop
     if ([System.IO.Path]::GetFullPath([string]$application.Program) -ine $watchedPath -or
         [System.IO.Path]::GetFullPath([string]$application.Program) -ieq $siblingPath) {
@@ -101,12 +105,21 @@ try {
     if (-not (Test-Path -LiteralPath $siblingPath -PathType Leaf)) {
         throw 'Network audit touched a sibling executable'
     }
+    # Simulate an external/idempotent cleanup before the shared finally path.
+    Remove-NetFirewallRule `
+        -DisplayName $program.RuleName `
+        -PolicyStore ActiveStore `
+        -ErrorAction Stop
 } finally {
     if ($null -ne $watchedProcess -and -not $watchedProcess.HasExited) {
         Stop-Process -Id $watchedProcess.Id -Force -ErrorAction SilentlyContinue
         $watchedProcess.WaitForExit(10000) | Out-Null
     }
-    if ($null -ne $audit) { Stop-YoreBotNetworkAudit -State $audit }
+    if ($null -ne $audit) {
+        Stop-YoreBotNetworkAudit -State $audit
+        # Cleanup must remain safe after a rule disappeared or a caller retries.
+        Stop-YoreBotNetworkAudit -State $audit
+    }
     if (-not [string]::IsNullOrWhiteSpace($beforePolicy)) {
         $afterPolicy = Get-OpaqueAuditPolicy
         if ($afterPolicy -cne $beforePolicy) {

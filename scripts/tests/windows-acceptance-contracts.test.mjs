@@ -379,6 +379,14 @@ test('real Chat and Agent work run inside one restored process-attributed networ
   assert.match(audit, /Select-Object -First 20/)
   assert.doesNotMatch(audit, /\/success:enable/)
   assert.doesNotMatch(audit, /RemoteAddress\s+Any|Stop-Process\s+-Name/i)
+  assert.match(
+    audit,
+    /Remove-NetFirewallRule[\s\S]*?-PolicyStore ActiveStore[\s\S]*?-ErrorAction SilentlyContinue/
+  )
+  assert.match(
+    audit,
+    /Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop[\s\S]*?\.DisplayName\.StartsWith\([\s\S]*?\$State\.RulePrefix/
+  )
 
   for (const value of [
     'Start-YoreBotNetworkAudit',
@@ -397,6 +405,20 @@ test('real Chat and Agent work run inside one restored process-attributed networ
       `missing live audit regression: ${value}`
     )
   }
+  assert.match(
+    auditRegression,
+    /Get-NetFirewallRule\s+`\s*-DisplayName \$program\.RuleName\s+`\s*-PolicyStore ActiveStore/
+  )
+  assert.match(
+    auditRegression,
+    /Remove-NetFirewallRule\s+`\s*-DisplayName \$program\.RuleName\s+`\s*-PolicyStore ActiveStore/
+  )
+  assert.equal(
+    (auditRegression.match(/Stop-YoreBotNetworkAudit -State \$audit/g) ?? [])
+      .length,
+    2,
+    'cleanup retry must be regression-tested'
+  )
 
   const firstUseDownload = firstUse.indexOf(
     "Get-FileHash -LiteralPath $modelPath -Algorithm SHA256"
@@ -423,9 +445,12 @@ test('real Chat and Agent work run inside one restored process-attributed networ
     'Assert-CdpNetworkAudit',
     '$uri.IsUnc',
     'Get-CdpNetworkUriDiagnostic',
+    'WebView2 Network sensor did not observe the expected loopback health request',
+    "$uri.AbsolutePath -cne '/health'",
   ]) {
     assert.ok(firstUse.includes(value), `missing WebView2 network guard: ${value}`)
   }
+  assert.doesNotMatch(firstUse, /SkipExistingConnectionCheck/)
   assert.match(firstUse, /finally \{[\s\S]*Stop-YoreBotNetworkAudit/)
 
   const agentDownload = agent.indexOf(

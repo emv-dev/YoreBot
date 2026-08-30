@@ -343,6 +343,21 @@ function Assert-CdpNetworkAudit {
     if (-not $script:CaptureCdpNetwork) {
         throw 'WebView2 network observation ended before assertion'
     }
+    $healthRequests = @(
+        $script:CdpNetworkEvents | Where-Object {
+            if ($_.Method -ne 'Network.requestWillBeSent') { return $false }
+            try { $uri = [Uri]$_.Url } catch { return $false }
+            if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'http' -or
+                $uri.AbsolutePath -cne '/health') {
+                return $false
+            }
+            return $uri.Host -ieq 'localhost' -or
+                (Test-YoreBotLoopbackAddress -Address $uri.Host)
+        }
+    )
+    if ($healthRequests.Count -eq 0) {
+        throw 'WebView2 Network sensor did not observe the expected loopback health request'
+    }
     $violations = @(
         $script:CdpNetworkEvents |
             Where-Object { -not (Test-CdpNetworkUrlIsLocal -Value $_.Url) }
@@ -889,8 +904,7 @@ JSON.stringify({
             -State $networkAudit `
             -Process $process `
             -Path $path `
-            -Role 'yorebot-webview2' `
-            -SkipExistingConnectionCheck
+            -Role 'yorebot-webview2'
     }
     $script:CdpNetworkEvents.Clear()
     $script:CaptureCdpNetwork = $true

@@ -131,7 +131,7 @@ function Add-YoreBotNetworkAuditProgram {
     $existing = @($State.Programs | Where-Object { $_.Path -ieq $canonicalPath })
     if ($existing.Count -gt 0) { return $existing[0] }
 
-    $ruleName = "$($State.Name) $Role $([guid]::NewGuid().ToString('N'))"
+    $ruleName = "$($State.RulePrefix) $Role $([guid]::NewGuid().ToString('N'))"
     New-NetFirewallRule `
         -DisplayName $ruleName `
         -Direction Outbound `
@@ -204,8 +204,7 @@ function Watch-YoreBotNetworkProcess {
         [Parameter(Mandatory)] $State,
         [Parameter(Mandatory)][System.Diagnostics.Process] $Process,
         [Parameter(Mandatory)][string] $Path,
-        [Parameter(Mandatory)][string] $Role,
-        [switch] $SkipExistingConnectionCheck
+        [Parameter(Mandatory)][string] $Role
     )
 
     $Process.Refresh()
@@ -219,18 +218,16 @@ function Watch-YoreBotNetworkProcess {
     if (-not @($State.Programs | Where-Object { $_.Path -ieq $canonicalPath })) {
         throw "Network-audited $Role process has no exact firewall rule"
     }
-    if (-not $SkipExistingConnectionCheck) {
-        $existing = @(
-            Get-NetTCPConnection -OwningProcess $Process.Id -State Established -ErrorAction SilentlyContinue |
-                Where-Object { -not (Test-YoreBotLoopbackAddress -Address $_.RemoteAddress) } |
-                Select-Object -First 20
-        )
-        if ($existing.Count -gt 0) {
-            $destinations = @($existing | ForEach-Object {
-                "$($_.RemoteAddress):$($_.RemotePort)"
-            }) -join ','
-            throw "Network-audited $Role already has a non-loopback connection: $destinations"
-        }
+    $existing = @(
+        Get-NetTCPConnection -OwningProcess $Process.Id -State Established -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-YoreBotLoopbackAddress -Address $_.RemoteAddress) } |
+            Select-Object -First 20
+    )
+    if ($existing.Count -gt 0) {
+        $destinations = @($existing | ForEach-Object {
+            "$($_.RemoteAddress):$($_.RemotePort)"
+        }) -join ','
+        throw "Network-audited $Role already has a non-loopback connection: $destinations"
     }
     Add-YoreBotWatchedProcessRecord `
         -State $State `
@@ -263,6 +260,7 @@ function Start-YoreBotNetworkAudit {
     $backupPath = Join-Path $canonicalRoot "audit-policy-$([guid]::NewGuid().ToString('N')).csv"
     $state = [pscustomobject]@{
         Name = $Name
+        RulePrefix = "YoreBot network audit $([guid]::NewGuid().ToString('N'))"
         WorkRoot = $canonicalRoot
         BackupPath = $backupPath
         StartedAt = [DateTime]::UtcNow
@@ -409,16 +407,29 @@ function Stop-YoreBotNetworkAudit {
     if (-not $State.Active) { return }
     $errors = [System.Collections.Generic.List[string]]::new()
     foreach ($ruleName in @($State.RuleNames)) {
-        try {
-            Remove-NetFirewallRule `
-                -DisplayName $ruleName `
-                -PolicyStore ActiveStore `
-                -ErrorAction Stop
-        } catch {
-            $errors.Add("firewall rule '$ruleName': $($_.Exception.Message)")
-        }
+        Remove-NetFirewallRule `
+            -DisplayName $ruleName `
+            -PolicyStore ActiveStore `
+            -ErrorAction SilentlyContinue
     }
     $State.RuleNames.Clear()
+    try {
+        $remainingRules = @(
+            Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop |
+                Where-Object {
+                    $_.DisplayName.StartsWith(
+                        $State.RulePrefix + ' ',
+                        [System.StringComparison]::Ordinal
+                    )
+                } |
+                Select-Object -First 20
+        )
+        if ($remainingRules.Count -gt 0) {
+            $errors.Add("$($remainingRules.Count) generated firewall rule(s) remain")
+        }
+    } catch {
+        $errors.Add("firewall cleanup verification: $($_.Exception.Message)")
+    }
     if (Test-Path -LiteralPath $State.BackupPath -PathType Leaf) {
         $restoreOutput = (& auditpol.exe /restore "/file:$($State.BackupPath)" 2>&1 | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) {
