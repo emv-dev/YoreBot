@@ -109,6 +109,12 @@ test('Agent executable resolution handles Cargo JSON shapes and fails closed', (
   assert.match(script, /Cargo compiler-artifact diagnostics: count=/)
   assert.match(script, /\$executablePresent -or \$targetName -ceq 'app_lib'/)
   assert.match(script, /Select-Object -Last 40/)
+  assert.match(script, /\[string\]\$target\['name'\] -cne 'app_lib'/)
+  assert.match(script, /\$target\['test'\] -isnot \[bool\]/)
+  assert.match(script, /\$target\['test'\] -ne \$true/)
+  assert.match(script, /-not \$executableExists/)
+  assert.match(script, /name = 'dependency_lib'/)
+  assert.match(script, /kind = @\('staticlib', 'cdylib', 'rlib'\)/)
 
   const productSeams = workflow.indexOf('- name: Test product seams')
   const resolver = workflow.indexOf('- name: Verify real Agent acceptance resolver')

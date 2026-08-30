@@ -181,7 +181,7 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
                 $priorityDiagnostics.Add($summary)
             }
 
-            if (-not $executablePresent -or
+            if (-not $executableExists -or
                 $null -eq $profile -or
                 $null -eq $target) {
                 continue
@@ -189,8 +189,11 @@ function Resolve-AgentAcceptanceExecutableFromCargoLines {
             if (-not $profile.Contains('test') -or
                 $profile['test'] -isnot [bool] -or
                 $profile['test'] -ne $true -or
-                -not $target.Contains('kind') -or
-                @($target['kind']) -notcontains 'lib') {
+                -not $target.Contains('name') -or
+                [string]$target['name'] -cne 'app_lib' -or
+                -not $target.Contains('test') -or
+                $target['test'] -isnot [bool] -or
+                $target['test'] -ne $true) {
                 continue
             }
             $executables.Add([System.IO.Path]::GetFullPath(
@@ -255,25 +258,67 @@ function Test-AgentAcceptanceExecutableParser {
             reason = 'compiler-artifact'
             executable = $firstExecutable
             profile = [ordered]@{ test = $true }
-            target = [ordered]@{ kind = @('lib') }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
         }
         $otherArtifact = [ordered]@{
             reason = 'compiler-artifact'
             executable = $secondExecutable
             profile = [ordered]@{ test = $false }
-            target = [ordered]@{ kind = @('lib') }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
         }
         $binArtifact = [ordered]@{
             reason = 'compiler-artifact'
             executable = $secondExecutable
             profile = [ordered]@{ test = $true }
-            target = [ordered]@{ kind = @('bin') }
+            target = [ordered]@{
+                name = 'Atomic-Chat'
+                kind = @('bin')
+                crate_types = @('bin')
+                test = $true
+            }
+        }
+        $dependencyArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'dependency_lib'
+                kind = @('lib')
+                crate_types = @('lib')
+                test = $true
+            }
+        }
+        $nonTestTargetArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $false
+            }
         }
         $duplicateArtifact = [ordered]@{
             reason = 'compiler-artifact'
             executable = $secondExecutable
             profile = [ordered]@{ test = $true }
-            target = [ordered]@{ kind = @('lib') }
+            target = [ordered]@{
+                name = 'app_lib'
+                kind = @('staticlib', 'cdylib', 'rlib')
+                crate_types = @('staticlib', 'cdylib', 'rlib')
+                test = $true
+            }
         }
 
         $singleLines = @(
@@ -292,7 +337,13 @@ function Test-AgentAcceptanceExecutableParser {
         $mixedLines = @(
             (ConvertTo-Json -InputObject ([ordered]@{ reason = 'build-finished' }) `
                 -Compress -Depth 10),
-            (ConvertTo-Json -InputObject @($otherArtifact, $validArtifact, $binArtifact) `
+            (ConvertTo-Json -InputObject @(
+                $otherArtifact,
+                $validArtifact,
+                $binArtifact,
+                $dependencyArtifact,
+                $nonTestTargetArtifact
+            ) `
                 -Compress -Depth 10)
         )
         $mixed = Resolve-AgentAcceptanceExecutableFromCargoLines `
@@ -304,7 +355,12 @@ function Test-AgentAcceptanceExecutableParser {
 
         try {
             Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines @(
-                ConvertTo-Json -InputObject $otherArtifact -Compress -Depth 10
+                ConvertTo-Json -InputObject @(
+                    $otherArtifact,
+                    $binArtifact,
+                    $dependencyArtifact,
+                    $nonTestTargetArtifact
+                ) -Compress -Depth 10
             ) | Out-Null
             throw 'zero matching Cargo compiler-artifacts fixture unexpectedly passed'
         } catch {
