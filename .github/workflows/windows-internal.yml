@@ -308,7 +308,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($shippingBrowserArgs)) {
             throw 'Shipping Windows webview has no offline network boundary'
           }
-          $testOnlyBrowserArgs = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229'
+          $testOnlyBrowserArgs = '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9229'
           $config.app.windows[0].additionalBrowserArgs = "$shippingBrowserArgs $testOnlyBrowserArgs"
           $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
           $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM

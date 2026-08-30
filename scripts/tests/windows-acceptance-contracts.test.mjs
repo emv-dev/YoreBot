@@ -706,6 +706,8 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.equal(configuredWindows.app.windows.length, 1)
   const shippingBrowserArgs = configuredWindows.app.windows[0].additionalBrowserArgs
   for (const value of [
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
+    '--autoplay-policy=no-user-gesture-required',
     '--proxy-server=http://127.0.0.1:9',
     '--proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost',
   ]) {
@@ -765,8 +767,6 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   for (const value of [
     'src-tauri/tauri.windows.conf.json',
     'additionalBrowserArgs',
-    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
-    '--autoplay-policy=no-user-gesture-required',
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=9229',
     "@('--config', $configPath)",
@@ -777,6 +777,14 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(
     acceptanceBuild,
     /\$shippingBrowserArgs = \[string\]\$config\.app\.windows\[0\]\.additionalBrowserArgs[\s\S]*\$config\.app\.windows\[0\]\.additionalBrowserArgs = "\$shippingBrowserArgs \$testOnlyBrowserArgs"/
+  )
+  assert.match(
+    acceptanceBuild,
+    /\$testOnlyBrowserArgs = '--remote-debugging-address=127\.0\.0\.1 --remote-debugging-port=9229'/
+  )
+  assert.doesNotMatch(
+    acceptanceBuild,
+    /\$testOnlyBrowserArgs = '[^']*(?:msWebOOUI|autoplay-policy)/
   )
   assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 2)
   assert.match(
