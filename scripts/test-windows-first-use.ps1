@@ -1360,6 +1360,32 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         throw 'Actual Chat UI did not complete with the expected local response marker'
     }
 
+    $newChatClicked = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
+(() => {
+  const matches = [...document.querySelectorAll('button')]
+    .filter((button) => button.innerText.trim() === 'New Chat');
+  if (matches.length !== 1) return false;
+  matches[0].click();
+  return true;
+})()
+'@
+    if (-not $newChatClicked) {
+        throw 'The installed Chat did not expose its actual New Chat control'
+    }
+    $homeReady = $false
+    $homeDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $homeReady = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
+location.pathname === '/' &&
+  document.querySelector('[data-testid="chat-input"]') instanceof HTMLTextAreaElement
+'@
+        if ($homeReady) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $homeDeadline)
+    if (-not $homeReady) {
+        throw 'The actual New Chat control did not return to the Home route'
+    }
+
     Set-Content `
         -LiteralPath (Join-Path $downloadsRoot 'quarterly-report.pdf') `
         -Value 'REPORT_SENTINEL_481' `

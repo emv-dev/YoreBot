@@ -679,6 +679,8 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     '{374DE290-123F-4565-9164-39C4925E467B}',
     'The operating system Downloads folder is not empty; refusing to alter it',
     "button.innerText.trim() === 'Organize my Downloads'",
+    "button.innerText.trim() === 'New Chat'",
+    "location.pathname === '/'",
     "localStorage.getItem('agent-mode')",
     "workspaces?.['temporary-chat']?.primaryRoot",
     "skill -ceq '/downloads-organizer'",
@@ -697,6 +699,14 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     assert.ok(script.includes(value), `installed Downloads proof omits ${value}`)
   }
 
+  const completedChat = script.indexOf(
+    "throw 'Actual Chat UI did not complete with the expected local response marker'"
+  )
+  const newChat = script.indexOf(
+    "button.innerText.trim() === 'New Chat'",
+    completedChat
+  )
+  const homeRoute = script.indexOf("location.pathname === '/'", newChat)
   const exactTask = script.indexOf(
     "button.innerText.trim() === 'Organize my Downloads'"
   )
@@ -711,7 +721,10 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
   const denySnapshot = script.indexOf('Deny changed the Downloads disk state', deny)
   const networkAssert = script.indexOf('Assert-CdpNetworkAudit', denySnapshot)
   assert.ok(
-    exactTask >= 0 &&
+    completedChat >= 0 &&
+      newChat > completedChat &&
+      homeRoute > newChat &&
+      exactTask > homeRoute &&
       plan > exactTask &&
       planSnapshot > plan &&
       apply > planSnapshot &&
