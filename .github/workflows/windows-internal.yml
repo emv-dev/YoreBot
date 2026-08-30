@@ -137,8 +137,9 @@ jobs:
           }
 
           $hooks = Get-Content "src-tauri/windows/hooks.nsh" -Raw
+          $cleanup = Get-Content "src-tauri/windows/stop-yorebot-owned-processes.ps1" -Raw
           foreach ($forbidden in @('$INSTDIR*', '$APPDATA\YoreBot*')) {
-            if ($hooks.Contains($forbidden)) {
+            if (($hooks + $cleanup).Contains($forbidden)) {
               throw "Unsafe uninstaller prefix match remains: $forbidden"
             }
           }
@@ -149,7 +150,7 @@ jobs:
             "[char]92",
             "[System.StringComparison]::OrdinalIgnoreCase"
           )) {
-            if (-not ($hooks.Contains($required))) {
+            if (-not ($cleanup.Contains($required))) {
               throw "Uninstaller boundary guard is missing: $required"
             }
           }
@@ -175,6 +176,8 @@ jobs:
           if (Test-EqualOrChild "C:\Users\runneradmin\AppData\Roaming\YoreBot-old\bun.exe" "C:\Users\runneradmin\AppData\Roaming\YoreBot") {
             throw "Sibling data path must not match"
           }
+
+          ./scripts/test-windows-uninstall-cleanup.ps1
 
       - name: Install pinned icon build dependency
         shell: pwsh

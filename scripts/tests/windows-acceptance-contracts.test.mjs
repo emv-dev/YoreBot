@@ -210,6 +210,9 @@ test('disabled public updater is not registered during desktop startup', () => {
 test('installer smoke owns exact processes and protects prefix siblings', () => {
   const script = read('scripts/test-windows-installer.ps1')
   const hooks = read('src-tauri/windows/hooks.nsh')
+  const cleanup = read('src-tauri/windows/stop-yorebot-owned-processes.ps1')
+  const cleanupTest = read('scripts/test-windows-uninstall-cleanup.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
 
   for (const value of [
     "'YoreBotTools'",
@@ -254,8 +257,34 @@ test('installer smoke owns exact processes and protects prefix siblings', () => 
   )
   assert.doesNotMatch(hooks, /\$INSTDIR\*/)
   assert.doesNotMatch(hooks, /\$APPDATA\\YoreBot\*/)
-  assert.match(hooks, /\.StartsWith\(/)
-  assert.match(hooks, /\[char\]92/)
+  assert.match(cleanup, /\.StartsWith\(/)
+  assert.match(cleanup, /\[char\]92/)
+  assert.match(hooks, /stop-yorebot-owned-processes\.ps1/)
+  assert.match(hooks, /nsExec::ExecToStack/)
+  assert.match(hooks, /SetErrorLevel 1[\s\S]*Quit/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.match(hooks, /!macro NSIS_HOOK_PREUNINSTALL[\s\S]*!insertmacro YOREBOT_STOP_OWNED_HELPERS/)
+  assert.match(cleanup, /Get-Process -Name llama-server,bun,uv/)
+  assert.match(cleanup, /Stop-Process -Id/)
+  assert.match(cleanup, /WaitForExit\(15000\)/)
+  assert.match(cleanup, /\.StartsWith\([\s\S]*\[System\.StringComparison\]::OrdinalIgnoreCase/)
+  assert.doesNotMatch(cleanup, /Stop-Process\s+-Name/i)
+  assert.doesNotMatch(cleanup, /taskkill/i)
+  for (const value of [
+    "'YoreBotTools'",
+    "'Roaming/YoreBotBackup'",
+    "'OtherApp'",
+    "-Name 'llama-server'",
+    "-Name 'bun'",
+    "-Name 'uv'",
+    '& $cleanupScript -InstallRoot $installRoot -DataRoot $dataRoot',
+    'Owned helper survived uninstall cleanup',
+    'Older-version orphan survived reinstall cleanup',
+    'Cleanup terminated a sibling or unrelated helper',
+  ]) {
+    assert.ok(cleanupTest.includes(value), `missing cleanup regression: ${value}`)
+  }
+  assert.match(workflow, /\.\/scripts\/test-windows-uninstall-cleanup\.ps1/)
 })
 
 test('model smoke verifies both downloads before an exact outbound block and loopback request', () => {

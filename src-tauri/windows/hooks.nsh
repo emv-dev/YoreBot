@@ -22,16 +22,35 @@
 ; A custom data_folder set by the user via "Change data folder location"
 ; is NOT covered by these hooks — the user is responsible for cleaning it.
 
+!macro YOREBOT_STOP_OWNED_HELPERS
+  ; Extract one reviewed implementation into this installer/uninstaller. It
+  ; stops only exact-name helpers whose canonical executable path is equal to
+  ; or below the exact install/data roots. Prefix siblings remain untouched.
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=YoreBotStopOwnedProcesses.ps1 "${__FILEDIR__}\stop-yorebot-owned-processes.ps1"
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\YoreBotStopOwnedProcesses.ps1" -InstallRoot "$INSTDIR" -DataRoot "$APPDATA\YoreBot"'
+  Pop $0
+  Pop $1
+  Delete "$PLUGINSDIR\YoreBotStopOwnedProcesses.ps1"
+  SetOutPath "$INSTDIR"
+  ${If} $0 != 0
+    DetailPrint "YoreBot could not safely stop its local helpers."
+    SetErrorLevel 1
+    Quit
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  ; Also reap a backend left by an older uninstaller before reinstall/update.
+  !insertmacro YOREBOT_STOP_OWNED_HELPERS
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; Tauri's CheckIfAppIsRunning macro (called later in the Section Uninstall
-  ; from the bundle template) already handles the main binary. Here we kill
-  ; helper processes that the app spawns and that frequently keep WebView2
-  ; / data files locked when the uninstaller tries to RmDir /r.
-  ;
-  ; Stop only helpers whose executable belongs to this install or YoreBot's
-  ; data folder. Never terminate another app's llama.cpp, Bun, or uv process.
-  nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name llama-server,bun,uv -ErrorAction SilentlyContinue | Where-Object { try { ([System.IO.Path]::GetFullPath($_.Path) -ieq [System.IO.Path]::GetFullPath(\"$INSTDIR\").TrimEnd([char]92)) -or [System.IO.Path]::GetFullPath($_.Path).StartsWith([System.IO.Path]::GetFullPath(\"$INSTDIR\").TrimEnd([char]92) + [char]92, [System.StringComparison]::OrdinalIgnoreCase) -or ([System.IO.Path]::GetFullPath($_.Path) -ieq [System.IO.Path]::GetFullPath(\"$APPDATA\YoreBot\").TrimEnd([char]92)) -or [System.IO.Path]::GetFullPath($_.Path).StartsWith([System.IO.Path]::GetFullPath(\"$APPDATA\YoreBot\").TrimEnd([char]92) + [char]92, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false } } | Stop-Process -Force -ErrorAction SilentlyContinue"'
-  Pop $0
+  ; from the bundle template) already handles the main binary. Here we stop
+  ; helper processes before the uninstaller removes their owning files.
+  !insertmacro YOREBOT_STOP_OWNED_HELPERS
 
   ; msedgewebview2.exe is shared with other Edge-based apps on the system —
   ; we must only kill instances that belong to *our* WebView2 user data

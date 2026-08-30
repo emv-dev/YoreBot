@@ -836,8 +836,14 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         if ($serverProcess.HasExited) { break }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $serverExitDeadline)
-    if (-not $serverProcess.HasExited -or
-        @(Get-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot).Count -ne 0) {
+    $remainingOwnedServers = @(Get-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot)
+    if (-not $serverProcess.HasExited -or $remainingOwnedServers.Count -ne 0) {
+        $remainingSummary = @(
+            $remainingOwnedServers | ForEach-Object {
+                "pid=$($_.Id) path=$([System.IO.Path]::GetFullPath($_.Path))"
+            }
+        ) -join '; '
+        Write-Host "Owned backend uninstall diagnostic: captured_pid=$($serverProcess.Id) captured_path=$serverPath data_root=$dataRoot captured_exited=$($serverProcess.HasExited) remaining=[$remainingSummary]"
         throw 'YoreBot llama-server survived uninstall'
     }
     foreach ($marker in @(
