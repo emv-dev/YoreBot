@@ -6,6 +6,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 $projectRoot = Split-Path $PSScriptRoot
 $cleanupScript = Join-Path $projectRoot 'src-tauri/resources/stop-yorebot-owned-processes.ps1'
+$windowsPowerShell = Join-Path $env:SystemRoot 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
 $fixtureRoot = Join-Path $env:RUNNER_TEMP "yorebot-uninstall-cleanup-$([guid]::NewGuid().ToString('N'))"
 $installRoot = Join-Path $fixtureRoot 'YoreBot'
 $dataRoot = Join-Path $fixtureRoot 'Roaming/YoreBot'
@@ -36,6 +37,21 @@ function Start-Sentinel {
     return $process
 }
 
+function Invoke-Cleanup {
+    $output = & $windowsPowerShell `
+        -NoLogo `
+        -NoProfile `
+        -NonInteractive `
+        -ExecutionPolicy Bypass `
+        -File $cleanupScript `
+        -InstallRoot $installRoot `
+        -DataRoot $dataRoot 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows PowerShell cleanup exited $LASTEXITCODE`: $($output -join ' ')"
+    }
+    $output | ForEach-Object { Write-Host $_ }
+}
+
 try {
     $owned.Add((Start-Sentinel -Directory $dataRoot -Name 'llama-server'))
     $owned.Add((Start-Sentinel -Directory $installRoot -Name 'bun'))
@@ -45,7 +61,7 @@ try {
     $protected.Add((Start-Sentinel -Directory $dataSibling -Name 'bun'))
     $protected.Add((Start-Sentinel -Directory $unrelatedRoot -Name 'uv'))
 
-    & $cleanupScript -InstallRoot $installRoot -DataRoot $dataRoot
+    Invoke-Cleanup
 
     foreach ($process in $owned) {
         $process.Refresh()
@@ -57,7 +73,7 @@ try {
     # Model an upgrade from a version whose uninstaller left its backend alive.
     $upgradeOrphan = Start-Sentinel -Directory $dataRoot -Name 'llama-server'
     $owned.Add($upgradeOrphan)
-    & $cleanupScript -InstallRoot $installRoot -DataRoot $dataRoot
+    Invoke-Cleanup
     $upgradeOrphan.Refresh()
     if (-not $upgradeOrphan.HasExited) {
         throw "Older-version orphan survived reinstall cleanup: PID $($upgradeOrphan.Id)"
