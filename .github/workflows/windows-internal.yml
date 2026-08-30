@@ -286,6 +286,42 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Build test-only first-use NSIS installer
+        if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $config = Get-Content 'src-tauri/tauri.windows.conf.json' -Raw | ConvertFrom-Json
+          if ($config.app.windows.Count -ne 1) {
+            throw 'Expected exactly one configured Windows webview'
+          }
+          $config.app.windows[0] | Add-Member `
+            -NotePropertyName 'additionalBrowserArgs' `
+            -NotePropertyValue '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229' `
+            -Force
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
+          $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+
+          $bundleDir = 'src-tauri/target/debug/bundle/nsis'
+          Get-ChildItem $bundleDir -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+          $tauriArguments = @('tauri', 'build', '--debug', '--bundles', 'nsis', '--ci')
+          $tauriArguments += @('--config', $configPath)
+          yarn @tauriArguments
+
+          $installers = @(Get-ChildItem $bundleDir -Filter '*.exe' -File -Recurse)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one test-only NSIS installer, found $($installers.Count)"
+          }
+          if (Test-Path -LiteralPath 'first-use-artifacts') {
+            throw 'Test-only first-use artifact directory already exists'
+          }
+          New-Item -ItemType Directory 'first-use-artifacts' | Out-Null
+          Copy-Item `
+            -LiteralPath $installers[0].FullName `
+            -Destination 'first-use-artifacts/YoreBot-first-use-test-only.exe'
+
       - name: Verify installed automatic setup and first Chat response
         if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
         timeout-minutes: 55
@@ -293,12 +329,32 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $installers = @(Get-ChildItem "artifacts" -Filter "*.exe" -File)
+          $installers = @(Get-ChildItem "first-use-artifacts" -Filter "*.exe" -File)
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)"
           }
           $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-first-use-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/test-windows-first-use.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
+
+      - name: Delete test-only first-use installer
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
+          if (Test-Path -LiteralPath $configPath) {
+            Remove-Item -LiteralPath $configPath -Force
+          }
+          if (Test-Path -LiteralPath 'first-use-artifacts') {
+            Remove-Item -LiteralPath 'first-use-artifacts' -Recurse -Force
+          }
+          Get-ChildItem 'src-tauri/target/debug/bundle/nsis' `
+            -Filter '*.exe' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Remove-Item -Force
 
       - name: Smoke fresh NSIS install and uninstall
         shell: pwsh

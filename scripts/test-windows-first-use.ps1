@@ -41,9 +41,7 @@ $serverProcess = $null
 $cdpSocket = $null
 $appStdoutPath = ''
 $appStderrPath = ''
-$cdpPort = 0
-$oldWebViewArguments = $null
-$webViewArgumentsActive = $false
+$cdpPort = 9229
 $createdWorkRoot = $false
 $installed = $false
 $passed = $false
@@ -125,14 +123,17 @@ function Start-SiblingSentinel {
     $ownedSentinels.Add($process)
 }
 
-function Get-FreeLoopbackPort {
+function Assert-LoopbackPortAvailable {
+    param([int] $Port)
+
     $listener = [System.Net.Sockets.TcpListener]::new(
         [System.Net.IPAddress]::Loopback,
-        0
+        $Port
     )
-    $listener.Start()
     try {
-        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+        $listener.Start()
+    } catch {
+        throw "Test-only WebView2 loopback port is unavailable: $Port"
     } finally {
         $listener.Stop()
     }
@@ -430,14 +431,9 @@ try {
     New-Item -ItemType Directory -Path $workRootFull | Out-Null
     $createdWorkRoot = $true
 
-    # The NSIS template auto-launches YoreBot. Set the documented WebView2
-    # process arguments before the installer so both that launch and the exact
-    # owned relaunch inherit the same loopback-only debugging endpoint.
-    $cdpPort = Get-FreeLoopbackPort
-    $oldWebViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
-        "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$cdpPort"
-    $webViewArgumentsActive = $true
+    # The manual-only installer embeds this loopback debugging port through a
+    # temporary Tauri build overlay. Fail before install if it is unavailable.
+    Assert-LoopbackPortAvailable -Port $cdpPort
 
     $install = Start-Process -FilePath $installer -ArgumentList @(
         '/S', "/D=$installRoot"
@@ -476,8 +472,6 @@ try {
 
     $script:CdpCommandId = 0
     $cdpSocket = Connect-YoreBotWebView -Port $cdpPort -Process $appProcess
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments
-    $webViewArgumentsActive = $false
     Invoke-CdpCommand -Socket $cdpSocket -Method 'Runtime.enable' | Out-Null
 
     $setupObserved = $false
@@ -757,9 +751,6 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     }
     throw
 } finally {
-    if ($webViewArgumentsActive) {
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments
-    }
     if ($null -ne $cdpSocket) { $cdpSocket.Dispose() }
     Stop-ExactProcesses -Path $appPath
     Stop-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot

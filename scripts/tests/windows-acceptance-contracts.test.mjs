@@ -387,14 +387,16 @@ test('manual Windows first use drives installed automatic setup into real Chat',
 
   const script = read('scripts/test-windows-first-use.ps1')
   const workflow = read('.github/workflows/windows-internal.yml')
+  const baseConfig = read('src-tauri/tauri.conf.json')
+  const windowsConfig = read('src-tauri/tauri.windows.conf.json')
+  const releaseWorkflow = read('.github/workflows/release.yml')
+  const signedWorkflow = read('.github/workflows/windows-signed-candidate.yml')
   const setup = read('web-app/src/containers/YoreBotSetupScreen.tsx')
   const chatInput = read('web-app/src/containers/ChatInput.tsx')
   const threadRoute = read('web-app/src/routes/threads/$threadId.tsx')
   const messages = read('web-app/src/containers/MessageItem.tsx')
 
   for (const value of [
-    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
-    '--remote-debugging-address=127.0.0.1',
     'http://127.0.0.1:',
     'aria-label="YoreBot setup"',
     'data-testid="chat-input"',
@@ -434,27 +436,17 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(chatInput, /aria-label=["']Send message["']/)
   assert.match(threadRoute, /aria-label=["']Chat generation error["']/)
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
-  const browserArguments = script.indexOf(
-    '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ='
-  )
-  const installStart = script.indexOf('$install = Start-Process')
-  const cdpConnect = script.indexOf('$cdpSocket = Connect-YoreBotWebView')
-  const browserArgumentsRestore = script.indexOf(
-    '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments',
-    cdpConnect
-  )
-  assert.ok(
-    browserArguments >= 0 &&
-      installStart > browserArguments &&
-      cdpConnect > installStart &&
-      browserArgumentsRestore > cdpConnect,
-    'WebView2 debugging must be inherited by installer auto-launch and retained through CDP attach'
-  )
-  const cleanup = script.lastIndexOf('} finally {')
-  assert.match(
-    script.slice(cleanup),
-    /if \(\$webViewArgumentsActive\)[\s\S]*WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = \$oldWebViewArguments/
-  )
+  assert.match(script, /\$cdpPort = 9229/)
+  assert.match(script, /Assert-LoopbackPortAvailable -Port \$cdpPort/)
+  assert.doesNotMatch(script, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/)
+  for (const source of [
+    baseConfig,
+    windowsConfig,
+    releaseWorkflow,
+    signedWorkflow,
+  ]) {
+    assert.doesNotMatch(source, /additionalBrowserArgs|remote-debugging-port/)
+  }
   const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
   const completed = script.indexOf('$chatCompleted = $true')
   const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
@@ -481,10 +473,46 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   const agent = workflow.indexOf(
     '- name: Verify Downloads Agent on pinned model and CPU runtime'
   )
-  assert.ok(firstUse >= 0 && firstUse < installer && installer < agent)
+  const upload = workflow.indexOf('- uses: actions/upload-artifact@v4')
+  const instrumentedBuild = workflow.indexOf(
+    '- name: Build test-only first-use NSIS installer'
+  )
+  const instrumentedCleanup = workflow.indexOf(
+    '- name: Delete test-only first-use installer'
+  )
+  assert.ok(
+    upload >= 0 &&
+      instrumentedBuild > upload &&
+      firstUse > instrumentedBuild &&
+      instrumentedCleanup > firstUse &&
+      installer > instrumentedCleanup &&
+      agent > installer
+  )
+  const acceptanceBuild = workflow.slice(instrumentedBuild, firstUse)
+  for (const value of [
+    'src-tauri/tauri.windows.conf.json',
+    'additionalBrowserArgs',
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection',
+    '--autoplay-policy=no-user-gesture-required',
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=9229',
+    "@('--config', $configPath)",
+    'first-use-artifacts',
+  ]) {
+    assert.ok(acceptanceBuild.includes(value), `acceptance build omits ${value}`)
+  }
+  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 1)
+  assert.match(
+    acceptanceBuild,
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'/
+  )
   assert.match(
     workflow.slice(firstUse, firstUse + 1_200),
-    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*test-windows-first-use\.ps1/
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*first-use-artifacts[\s\S]*test-windows-first-use\.ps1/
+  )
+  assert.match(
+    workflow.slice(instrumentedCleanup, installer),
+    /if: always\(\) && github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*first-use-artifacts/
   )
   assert.match(
     workflow.slice(agent, agent + 300),
