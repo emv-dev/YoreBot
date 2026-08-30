@@ -677,7 +677,11 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
 
   for (const value of [
     '{374DE290-123F-4565-9164-39C4925E467B}',
-    'The operating system Downloads folder is not empty; refusing to alter it',
+    'Get-WindowsDownloadsRegistration',
+    'Set-WindowsDownloadsRegistration',
+    "Join-Path $workRootFull 'Downloads'",
+    'The isolated Downloads registration did not resolve to the test-owned root',
+    'The original Downloads registration was not restored exactly',
     "button.innerText.trim() === 'Organize my Downloads'",
     "button.innerText.trim() === 'New Chat'",
     "location.pathname === '/'",
@@ -745,6 +749,42 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
   assert.match(
     script,
     /if \(\$downloadsFixtureActive[\s\S]*?Remove-DownloadsFixture -Root \$downloadsRoot/
+  )
+  const captureDownloadsRegistration = script.indexOf(
+    '$downloadsRegistration = Get-WindowsDownloadsRegistration'
+  )
+  const isolateDownloadsRoot = script.indexOf(
+    "$downloadsRoot = Join-Path $workRootFull 'Downloads'",
+    captureDownloadsRegistration
+  )
+  const redirectDownloadsRegistration = script.indexOf(
+    'Set-WindowsDownloadsRegistration',
+    isolateDownloadsRoot
+  )
+  const installApp = script.indexOf('$install = Start-Process', redirectDownloadsRegistration)
+  const cleanupFinally = script.lastIndexOf('} finally {')
+  const restoreDownloadsRegistration = script.indexOf(
+    'Set-WindowsDownloadsRegistration',
+    cleanupFinally
+  )
+  const cleanupDownloadsFixture = script.indexOf(
+    'Remove-DownloadsFixture -Root $downloadsRoot',
+    restoreDownloadsRegistration
+  )
+  assert.ok(
+    captureDownloadsRegistration >= 0 &&
+      isolateDownloadsRoot > captureDownloadsRegistration &&
+      redirectDownloadsRegistration > isolateDownloadsRoot &&
+      installApp > redirectDownloadsRegistration &&
+      cleanupFinally > installApp &&
+      restoreDownloadsRegistration > cleanupFinally &&
+      cleanupDownloadsFixture > restoreDownloadsRegistration,
+    'the test must isolate Downloads before install and restore the exact registration before fixture cleanup'
+  )
+  assert.doesNotMatch(
+    script,
+    /Get-DownloadsSnapshot -Root \$downloadsRoot\) -cne '\[\]'\) \{\s*throw 'The operating system Downloads folder is not empty;/,
+    'acceptance must not inspect or depend on the runner original Downloads contents'
   )
   assert.doesNotMatch(script, /Invoke-PinnedDownload|RunDownloadsAgentAcceptance/)
 

@@ -29,6 +29,8 @@ $appPath = Join-Path $installRoot "$($defaultRun.Groups[1].Value).exe"
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
 $cleanupHelperPath = Join-Path $installRoot 'resources/stop-yorebot-owned-processes.ps1'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\YoreBot'
+$downloadsKnownFolderId = '{374DE290-123F-4565-9164-39C4925E467B}'
+$downloadsUserShellFoldersSubKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $dataRoot = Join-Path $env:APPDATA 'YoreBot/data'
 $configRoot = Join-Path $env:APPDATA 'app.yorebot.desktop'
 $webViewRoot = Join-Path $env:LOCALAPPDATA 'app.yorebot.desktop'
@@ -50,6 +52,9 @@ $installed = $false
 $passed = $false
 $downloadsRoot = ''
 $createdDownloadsRoot = $false
+$downloadsRegistration = $null
+$downloadsRegistrationRedirected = $false
+$downloadsRestoreError = $null
 $downloadsFixtureActive = $false
 $script:CaptureCdpNetwork = $false
 $script:CdpNetworkEvents = [System.Collections.Generic.List[object]]::new()
@@ -79,17 +84,69 @@ function Get-ComparableWindowsPath {
 }
 
 function Get-WindowsDownloadsPath {
-    $knownFolder = '{374DE290-123F-4565-9164-39C4925E467B}'
-    $userShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $userShellFolders = "HKCU:\$downloadsUserShellFoldersSubKey"
     $raw = Get-ItemPropertyValue `
         -LiteralPath $userShellFolders `
-        -Name $knownFolder `
+        -Name $downloadsKnownFolderId `
         -ErrorAction Stop
     $expanded = [Environment]::ExpandEnvironmentVariables([string]$raw)
     if ([string]::IsNullOrWhiteSpace($expanded)) {
         throw 'The operating system Downloads folder is unavailable'
     }
     return [System.IO.Path]::GetFullPath($expanded).TrimEnd([char]92)
+}
+
+function Get-WindowsDownloadsRegistration {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+        $downloadsUserShellFoldersSubKey,
+        $false
+    )
+    if ($null -eq $key) {
+        throw 'The operating system Downloads registration is unavailable'
+    }
+    try {
+        $value = $key.GetValue(
+            $downloadsKnownFolderId,
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+            throw 'The operating system Downloads registration is unavailable'
+        }
+        $kind = $key.GetValueKind($downloadsKnownFolderId)
+        if ($kind -notin @(
+            [Microsoft.Win32.RegistryValueKind]::String,
+            [Microsoft.Win32.RegistryValueKind]::ExpandString
+        )) {
+            throw "The operating system Downloads registration has unsupported type: $kind"
+        }
+        return [pscustomobject]@{
+            Value = [string]$value
+            Kind = $kind
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Set-WindowsDownloadsRegistration {
+    param(
+        [Parameter(Mandatory)][string] $Value,
+        [Parameter(Mandatory)][Microsoft.Win32.RegistryValueKind] $Kind
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+        $downloadsUserShellFoldersSubKey,
+        $true
+    )
+    if ($null -eq $key) {
+        throw 'The operating system Downloads registration is unavailable'
+    }
+    try {
+        $key.SetValue($downloadsKnownFolderId, $Value, $Kind)
+    } finally {
+        $key.Dispose()
+    }
 }
 
 function Get-DownloadsSnapshot {
@@ -1000,16 +1057,20 @@ try {
     New-Item -ItemType Directory -Path $workRootFull | Out-Null
     $createdWorkRoot = $true
 
-    # The UI task must bind the operating system's actual Downloads known
-    # folder. Keep this runner fixture isolated and fail before the model
-    # download rather than touching pre-existing user files.
-    $downloadsRoot = Get-WindowsDownloadsPath
-    if (-not (Test-Path -LiteralPath $downloadsRoot -PathType Container)) {
-        New-Item -ItemType Directory -Path $downloadsRoot | Out-Null
-        $createdDownloadsRoot = $true
-    }
-    if ((Get-DownloadsSnapshot -Root $downloadsRoot) -cne '[]') {
-        throw 'The operating system Downloads folder is not empty; refusing to alter it'
+    # The UI task must bind the operating system Downloads known folder. Point
+    # that registration at an empty test-owned root before app startup, without
+    # inspecting or mutating the runner's original Downloads contents.
+    $downloadsRegistration = Get-WindowsDownloadsRegistration
+    $downloadsRoot = Join-Path $workRootFull 'Downloads'
+    New-Item -ItemType Directory -Path $downloadsRoot | Out-Null
+    $createdDownloadsRoot = $true
+    $downloadsRegistrationRedirected = $true
+    Set-WindowsDownloadsRegistration `
+        -Value $downloadsRoot `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    if ((Get-ComparableWindowsPath -Value (Get-WindowsDownloadsPath)) -ine
+        (Get-ComparableWindowsPath -Value $downloadsRoot)) {
+        throw 'The isolated Downloads registration did not resolve to the test-owned root'
     }
 
     # The manual-only installer embeds this loopback debugging port through a
@@ -1656,6 +1717,22 @@ JSON.stringify((() => {
     }
     throw
 } finally {
+    if ($downloadsRegistrationRedirected) {
+        try {
+            Set-WindowsDownloadsRegistration `
+                -Value $downloadsRegistration.Value `
+                -Kind $downloadsRegistration.Kind
+            $restoredDownloadsRegistration = Get-WindowsDownloadsRegistration
+            if ($restoredDownloadsRegistration.Value -cne $downloadsRegistration.Value -or
+                $restoredDownloadsRegistration.Kind -ne $downloadsRegistration.Kind) {
+                throw 'The original Downloads registration was not restored exactly'
+            }
+            $downloadsRegistrationRedirected = $false
+        } catch {
+            $downloadsRestoreError = $_
+            Write-Warning 'The original Downloads registration could not be restored exactly'
+        }
+    }
     if ($null -ne $cdpSocket) { $cdpSocket.Dispose() }
     Stop-ExactProcesses -Path $appPath
     Stop-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot
@@ -1697,7 +1774,10 @@ JSON.stringify((() => {
     if (Test-Path -LiteralPath $dataSibling) {
         Remove-Item -LiteralPath $dataSibling -Recurse -Force
     }
-    if (-not $passed) {
+    if (-not $passed -or $null -ne $downloadsRestoreError) {
         Write-Host 'YoreBot installed first-use Chat and Downloads UI acceptance failed.'
+    }
+    if ($null -ne $downloadsRestoreError) {
+        throw $downloadsRestoreError.Exception
     }
 }
