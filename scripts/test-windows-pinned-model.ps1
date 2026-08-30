@@ -9,6 +9,8 @@ param(
 
     [switch] $ValidateManifestOnly,
 
+    [switch] $ValidateCargoParserOnly,
+
     [switch] $RunDownloadsAgentAcceptance
 )
 
@@ -106,6 +108,58 @@ function Get-ProcessesAtExactPath {
     )
 }
 
+function Resolve-AgentAcceptanceExecutableFromCargoLines {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $CargoLines)
+
+    $executables = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $cargoLines) {
+        try {
+            $decoded = ([string]$line) | ConvertFrom-Json -AsHashtable -Depth 40
+        } catch {
+            continue
+        }
+
+        $messages = [System.Collections.Generic.List[object]]::new()
+        if ($decoded -is [System.Array]) {
+            foreach ($entry in $decoded) { $messages.Add($entry) }
+        } else {
+            $messages.Add($decoded)
+        }
+        foreach ($message in $messages) {
+            if ($null -eq $message -or
+                $message -isnot [System.Collections.IDictionary] -or
+                -not $message.Contains('reason') -or
+                $message['reason'] -ne 'compiler-artifact' -or
+                -not $message.Contains('executable') -or
+                [string]::IsNullOrWhiteSpace([string]$message['executable']) -or
+                -not $message.Contains('profile') -or
+                $message['profile'] -isnot [System.Collections.IDictionary] -or
+                -not $message.Contains('target') -or
+                $message['target'] -isnot [System.Collections.IDictionary]) {
+                continue
+            }
+            $profile = $message['profile']
+            $target = $message['target']
+            if (-not $profile.Contains('test') -or
+                $profile['test'] -isnot [bool] -or
+                $profile['test'] -ne $true -or
+                -not $target.Contains('kind') -or
+                @($target['kind']) -notcontains 'lib') {
+                continue
+            }
+            $executables.Add([System.IO.Path]::GetFullPath(
+                [string]$message['executable']
+            ))
+        }
+    }
+    $unique = @($executables | Sort-Object -Unique)
+    if ($unique.Count -ne 1 -or
+        -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
+        throw "Expected one compiled Agent acceptance executable, found $($unique.Count)"
+    }
+    return $unique[0]
+}
+
 function Resolve-AgentAcceptanceExecutable {
     param([Parameter(Mandatory)][string] $OutputPath)
 
@@ -129,39 +183,104 @@ function Resolve-AgentAcceptanceExecutable {
         Get-Content -LiteralPath $OutputPath -Tail 120
         throw "Agent acceptance compile exited $cargoExitCode"
     }
+    return Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines $cargoLines
+}
 
-    $executables = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in $cargoLines) {
-        try { $message = ([string]$line) | ConvertFrom-Json -Depth 40 } catch { continue }
-        $reasonProperty = $message.PSObject.Properties['reason']
-        $executableProperty = $message.PSObject.Properties['executable']
-        $profileProperty = $message.PSObject.Properties['profile']
-        $targetProperty = $message.PSObject.Properties['target']
-        if ($null -eq $reasonProperty -or
-            $reasonProperty.Value -ne 'compiler-artifact' -or
-            $null -eq $executableProperty -or
-            [string]::IsNullOrWhiteSpace($executableProperty.Value) -or
-            $null -eq $profileProperty -or
-            $null -eq $targetProperty) {
-            continue
+function Test-AgentAcceptanceExecutableParser {
+    $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+        "yorebot-cargo-parser-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+    try {
+        $firstExecutable = Join-Path $fixtureRoot 'agent-one.exe'
+        $secondExecutable = Join-Path $fixtureRoot 'agent-two.exe'
+        New-Item -ItemType File -Path $firstExecutable | Out-Null
+        New-Item -ItemType File -Path $secondExecutable | Out-Null
+
+        $validArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $firstExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{ kind = @('lib') }
         }
-        $testProperty = $profileProperty.Value.PSObject.Properties['test']
-        $kindProperty = $targetProperty.Value.PSObject.Properties['kind']
-        if ($null -ne $testProperty -and
-            $testProperty.Value -eq $true -and
-            $null -ne $kindProperty -and
-            @($kindProperty.Value) -contains 'lib') {
-            $executables.Add([System.IO.Path]::GetFullPath(
-                [string]$executableProperty.Value
-            ))
+        $otherArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $false }
+            target = [ordered]@{ kind = @('lib') }
+        }
+        $binArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{ kind = @('bin') }
+        }
+        $duplicateArtifact = [ordered]@{
+            reason = 'compiler-artifact'
+            executable = $secondExecutable
+            profile = [ordered]@{ test = $true }
+            target = [ordered]@{ kind = @('lib') }
+        }
+
+        $singleLines = @(
+            'not JSON',
+            'null',
+            '42',
+            (ConvertTo-Json -InputObject $validArtifact -Compress -Depth 10)
+        )
+        $single = Resolve-AgentAcceptanceExecutableFromCargoLines `
+            -CargoLines $singleLines
+        if ($single -cne [System.IO.Path]::GetFullPath($firstExecutable)) {
+            throw 'single Cargo compiler-artifact fixture selected the wrong executable'
+        }
+        Write-Host 'Cargo parser fixture passed: single Cargo compiler-artifact'
+
+        $mixedLines = @(
+            (ConvertTo-Json -InputObject ([ordered]@{ reason = 'build-finished' }) `
+                -Compress -Depth 10),
+            (ConvertTo-Json -InputObject @($otherArtifact, $validArtifact, $binArtifact) `
+                -Compress -Depth 10)
+        )
+        $mixed = Resolve-AgentAcceptanceExecutableFromCargoLines `
+            -CargoLines $mixedLines
+        if ($mixed -cne [System.IO.Path]::GetFullPath($firstExecutable)) {
+            throw 'mixed Cargo compiler-artifacts fixture selected the wrong executable'
+        }
+        Write-Host 'Cargo parser fixture passed: mixed Cargo compiler-artifacts'
+
+        try {
+            Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines @(
+                ConvertTo-Json -InputObject $otherArtifact -Compress -Depth 10
+            ) | Out-Null
+            throw 'zero matching Cargo compiler-artifacts fixture unexpectedly passed'
+        } catch {
+            if (-not $_.Exception.Message.Contains(
+                'Expected one compiled Agent acceptance executable, found 0'
+            )) { throw }
+        }
+        Write-Host 'Cargo parser fixture passed: zero matching Cargo compiler-artifacts'
+
+        try {
+            Resolve-AgentAcceptanceExecutableFromCargoLines -CargoLines @(
+                (ConvertTo-Json -InputObject $validArtifact -Compress -Depth 10),
+                (ConvertTo-Json -InputObject $duplicateArtifact -Compress -Depth 10)
+            ) | Out-Null
+            throw 'multiple matching Cargo compiler-artifacts fixture unexpectedly passed'
+        } catch {
+            if (-not $_.Exception.Message.Contains(
+                'Expected one compiled Agent acceptance executable, found 2'
+            )) { throw }
+        }
+        Write-Host 'Cargo parser fixture passed: multiple matching Cargo compiler-artifacts'
+    } finally {
+        if (Test-Path -LiteralPath $fixtureRoot) {
+            [System.IO.Directory]::Delete($fixtureRoot, $true)
         }
     }
-    $unique = @($executables | Sort-Object -Unique)
-    if ($unique.Count -ne 1 -or
-        -not (Test-Path -LiteralPath $unique[0] -PathType Leaf)) {
-        throw "Expected one compiled Agent acceptance executable, found $($unique.Count)"
-    }
-    return $unique[0]
+}
+
+if ($ValidateCargoParserOnly) {
+    Test-AgentAcceptanceExecutableParser
+    return
 }
 
 function Get-PinnedModel {

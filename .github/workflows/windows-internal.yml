@@ -69,6 +69,7 @@ jobs:
               throw "PowerShell syntax errors in $script"
             }
           }
+          ./scripts/test-windows-pinned-model.ps1 -ValidateCargoParserOnly
           foreach ($profile in @('ordinary-16gb', 'high-end-32gb')) {
             ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly -HardwareProfile $profile
           }

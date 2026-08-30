@@ -71,6 +71,30 @@ test('ordinary and high-end Windows models and CPU runtime remain exactly pinned
   }
 })
 
+test('Agent executable resolution handles Cargo JSON shapes and fails closed', () => {
+  const script = read('scripts/test-windows-pinned-model.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  assert.match(workflow, /test-windows-pinned-model\.ps1 -ValidateCargoParserOnly/)
+  assert.match(script, /\[switch\] \$ValidateCargoParserOnly/)
+  assert.match(script, /ConvertFrom-Json -AsHashtable -Depth 40/)
+  assert.doesNotMatch(
+    script.slice(
+      script.indexOf('function Resolve-AgentAcceptanceExecutableFromCargoLines'),
+      script.indexOf('\nfunction Resolve-AgentAcceptanceExecutable {')
+    ),
+    /\.PSObject\.Properties/
+  )
+  for (const fixture of [
+    'single Cargo compiler-artifact',
+    'mixed Cargo compiler-artifacts',
+    'zero matching Cargo compiler-artifacts',
+    'multiple matching Cargo compiler-artifacts',
+  ]) {
+    assert.ok(script.includes(fixture), `missing Cargo parser fixture: ${fixture}`)
+  }
+})
+
 test('manual Windows proof selects the largest exact fit and fails before downloads', () => {
   const script = read('scripts/test-windows-pinned-model.ps1')
   const workflow = read('.github/workflows/windows-internal.yml')
