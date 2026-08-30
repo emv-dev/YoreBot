@@ -41,6 +41,9 @@ $serverProcess = $null
 $cdpSocket = $null
 $appStdoutPath = ''
 $appStderrPath = ''
+$cdpPort = 0
+$oldWebViewArguments = $null
+$webViewArgumentsActive = $false
 $createdWorkRoot = $false
 $installed = $false
 $passed = $false
@@ -141,6 +144,84 @@ function Read-BoundedFileTail {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
         Write-Host "Diagnostic tail: $Path"
         Get-Content -LiteralPath $Path -Tail $Lines -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-WebViewDiagnostics {
+    param([int] $Port, [System.Diagnostics.Process] $Process)
+
+    Write-Host "WebView2 diagnostics: expected_port=$Port app_pid=$($Process.Id)"
+    $webViewProcesses = @(
+        Get-CimInstance Win32_Process `
+            -Filter "Name = 'msedgewebview2.exe'" `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $commandProperty = $_.PSObject.Properties['CommandLine']
+                $parentProperty = $_.PSObject.Properties['ParentProcessId']
+                $commandLine = if ($null -ne $commandProperty) {
+                    [string]$commandProperty.Value
+                } else {
+                    ''
+                }
+                ($null -ne $parentProperty -and
+                    [int]$parentProperty.Value -eq $Process.Id) -or
+                    $commandLine.IndexOf(
+                        $webViewRoot,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    ) -ge 0 -or
+                    $commandLine.IndexOf(
+                        'app.yorebot.desktop',
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    ) -ge 0
+            } |
+            Select-Object -First 20
+    )
+    $webViewProcessIds = [System.Collections.Generic.List[int]]::new()
+    foreach ($candidate in $webViewProcesses) {
+        $idProperty = $candidate.PSObject.Properties['ProcessId']
+        $parentProperty = $candidate.PSObject.Properties['ParentProcessId']
+        $commandProperty = $candidate.PSObject.Properties['CommandLine']
+        if ($null -eq $idProperty) { continue }
+        $processId = [int]$idProperty.Value
+        $webViewProcessIds.Add($processId)
+        $parentId = if ($null -ne $parentProperty) {
+            [int]$parentProperty.Value
+        } else {
+            0
+        }
+        $commandLine = if ($null -ne $commandProperty) {
+            [string]$commandProperty.Value
+        } else {
+            ''
+        }
+        if ($commandLine.Length -gt 1200) {
+            $commandLine = $commandLine.Substring(0, 1200)
+        }
+        Write-Host "WebView2 process diagnostic: pid=$processId parent=$parentId command_line=$commandLine"
+    }
+
+    foreach ($listener in @(
+        Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.LocalPort -eq $Port -or
+                    $webViewProcessIds.Contains([int]$_.OwningProcess)
+            } |
+            Select-Object -First 20
+    )) {
+        Write-Host "WebView2 listener diagnostic: address=$($listener.LocalAddress) port=$($listener.LocalPort) pid=$($listener.OwningProcess)"
+    }
+
+    foreach ($activePort in @(
+        Get-ChildItem `
+            -LiteralPath $webViewRoot `
+            -Filter 'DevToolsActivePort' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 5
+    )) {
+        $value = @(Get-Content -LiteralPath $activePort.FullName -TotalCount 2)
+        Write-Host "DevToolsActivePort diagnostic: path=$($activePort.FullName) value=$($value -join '|')"
     }
 }
 
@@ -263,6 +344,7 @@ function Connect-YoreBotWebView {
     param([int] $Port, [System.Diagnostics.Process] $Process)
 
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    $lastEndpointError = ''
     do {
         $Process.Refresh()
         if ($Process.HasExited) {
@@ -302,9 +384,17 @@ function Connect-YoreBotWebView {
                 return $socket
             }
         } catch {
+            $lastEndpointError = $_.Exception.Message
             Start-Sleep -Milliseconds 500
         }
     } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not [string]::IsNullOrWhiteSpace($lastEndpointError)) {
+        if ($lastEndpointError.Length -gt 600) {
+            $lastEndpointError = $lastEndpointError.Substring(0, 600)
+        }
+        Write-Host "WebView2 endpoint diagnostic: $lastEndpointError"
+    }
+    Write-WebViewDiagnostics -Port $Port -Process $Process
     throw 'YoreBot WebView2 debugging endpoint did not become ready'
 }
 
@@ -340,6 +430,15 @@ try {
     New-Item -ItemType Directory -Path $workRootFull | Out-Null
     $createdWorkRoot = $true
 
+    # The NSIS template auto-launches YoreBot. Set the documented WebView2
+    # process arguments before the installer so both that launch and the exact
+    # owned relaunch inherit the same loopback-only debugging endpoint.
+    $cdpPort = Get-FreeLoopbackPort
+    $oldWebViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
+        "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$cdpPort"
+    $webViewArgumentsActive = $true
+
     $install = Start-Process -FilePath $installer -ArgumentList @(
         '/S', "/D=$installRoot"
     ) -Wait -PassThru
@@ -357,22 +456,14 @@ try {
     # Do not attach to an optional installer auto-launch: terminate only the
     # exact installed executable and launch one owned process with loopback CDP.
     Stop-ExactProcesses -Path $appPath
-    $cdpPort = Get-FreeLoopbackPort
     $appStdoutPath = Join-Path $workRootFull 'YoreBot.stdout.log'
     $appStderrPath = Join-Path $workRootFull 'YoreBot.stderr.log'
-    $oldWebViewArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
-        "--remote-debugging-address=127.0.0.1 --remote-debugging-port=$cdpPort"
-    try {
-        $appProcess = Start-Process `
-            -FilePath $appPath `
-            -WorkingDirectory $installRoot `
-            -RedirectStandardOutput $appStdoutPath `
-            -RedirectStandardError $appStderrPath `
-            -PassThru
-    } finally {
-        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments
-    }
+    $appProcess = Start-Process `
+        -FilePath $appPath `
+        -WorkingDirectory $installRoot `
+        -RedirectStandardOutput $appStdoutPath `
+        -RedirectStandardError $appStderrPath `
+        -PassThru
     Start-Sleep -Seconds 8
     $appProcess.Refresh()
     if ($appProcess.HasExited) {
@@ -385,6 +476,8 @@ try {
 
     $script:CdpCommandId = 0
     $cdpSocket = Connect-YoreBotWebView -Port $cdpPort -Process $appProcess
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments
+    $webViewArgumentsActive = $false
     Invoke-CdpCommand -Socket $cdpSocket -Method 'Runtime.enable' | Out-Null
 
     $setupObserved = $false
@@ -664,6 +757,9 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     }
     throw
 } finally {
+    if ($webViewArgumentsActive) {
+        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments
+    }
     if ($null -ne $cdpSocket) { $cdpSocket.Dispose() }
     Stop-ExactProcesses -Path $appPath
     Stop-ProcessesUnderRoot -Name 'llama-server' -Root $dataRoot

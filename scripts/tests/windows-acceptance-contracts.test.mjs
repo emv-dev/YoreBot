@@ -409,6 +409,9 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     'llamacpp-upstream/backends/b10431/win-cpu-x64',
     'llamacpp-upstream/backends/b10431/win-vulkan-x64',
     'Active Chat runtime did not report exact build 10431',
+    'DevToolsActivePort',
+    'Get-NetTCPConnection',
+    "Name = 'msedgewebview2.exe'",
     'YoreBot installed first-use Chat acceptance passed',
   ]) {
     assert.ok(script.includes(value), `first-use proof omits ${value}`)
@@ -431,6 +434,27 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(chatInput, /aria-label=["']Send message["']/)
   assert.match(threadRoute, /aria-label=["']Chat generation error["']/)
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
+  const browserArguments = script.indexOf(
+    '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ='
+  )
+  const installStart = script.indexOf('$install = Start-Process')
+  const cdpConnect = script.indexOf('$cdpSocket = Connect-YoreBotWebView')
+  const browserArgumentsRestore = script.indexOf(
+    '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldWebViewArguments',
+    cdpConnect
+  )
+  assert.ok(
+    browserArguments >= 0 &&
+      installStart > browserArguments &&
+      cdpConnect > installStart &&
+      browserArgumentsRestore > cdpConnect,
+    'WebView2 debugging must be inherited by installer auto-launch and retained through CDP attach'
+  )
+  const cleanup = script.lastIndexOf('} finally {')
+  assert.match(
+    script.slice(cleanup),
+    /if \(\$webViewArgumentsActive\)[\s\S]*WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = \$oldWebViewArguments/
+  )
   const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
   const completed = script.indexOf('$chatCompleted = $true')
   const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
