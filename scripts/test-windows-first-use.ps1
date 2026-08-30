@@ -376,11 +376,12 @@ function Connect-YoreBotWebView {
 
         $targets = @()
         try {
+            $response = Invoke-RestMethod `
+                -Uri "http://127.0.0.1:$Port/json/list" `
+                -NoProxy `
+                -TimeoutSec 3
             $targets = @(
-                Invoke-RestMethod `
-                    -Uri "http://127.0.0.1:$Port/json/list" `
-                    -NoProxy `
-                    -TimeoutSec 3
+                foreach ($entry in $response) { $entry }
             )
         } catch {
             $lastEndpointError = $_.Exception.Message

@@ -433,6 +433,11 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   const connect = script.slice(connectStart, connectEnd)
   assert.match(
     connect,
+    /\$response = Invoke-RestMethod[\s\S]*?-TimeoutSec 3[\s\S]*?\$targets = @\(\s*foreach \(\$entry in \$response\) \{ \$entry \}\s*\)/,
+    'Invoke-RestMethod JSON arrays must be explicitly enumerated before target filtering'
+  )
+  assert.match(
+    connect,
     /\$socket = \[System\.Net\.WebSockets\.ClientWebSocket\]::new\(\)[\s\S]*?try \{[\s\S]*?\.ConnectAsync\([\s\S]*?\} catch \{[\s\S]*?\$socket\.Dispose\(\)/,
     'a failed CDP WebSocket handshake must dispose its owned socket before retrying'
   )
@@ -446,6 +451,11 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     webSocketDebuggerUrl:
       'ws://localhost:9229/devtools/page/0123456789ABCDEF',
   }
+  const oneElementInvokeRestResponse = [edgeWebViewTarget]
+  assert.deepEqual(
+    Array.from(oneElementInvokeRestResponse, (entry) => entry),
+    [edgeWebViewTarget]
+  )
   assert.equal(edgeWebViewTarget.type, 'webview')
   assert.equal(new URL(edgeWebViewTarget.url).host, 'tauri.localhost')
   assert.match(
