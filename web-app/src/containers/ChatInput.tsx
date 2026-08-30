@@ -2605,6 +2605,7 @@ const ChatInput = memo(function ChatInput({
                   <Button
                     variant="default"
                     size="icon-sm"
+                    aria-label="Send message"
                     disabled={
                       !prompt.trim() ||
                       isAttachmentPipelineBusy ||

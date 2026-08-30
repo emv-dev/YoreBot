@@ -309,6 +309,23 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-29 — Drive installed first-use Chat through loopback WebView2 debugging
+- **Context:** Issue #21 requires evidence that a fresh Windows installer uses
+  the real automatic setup path and returns a visible local Chat response;
+  existing model tests bypassed both the installed app and consumer UI.
+- **Decision:** Keep the 5.7 GB proof manual-only and drive the installed
+  WebView2 over a temporary loopback-only CDP port from PowerShell. Reuse the
+  product setup, pinned model/runtime manifests, and scoped NSIS uninstall;
+  add no product automation dependency or test-only setup bypass.
+- **Consequences:** One bounded ritual can prove no-choice setup, exact pin
+  integrity, an actual rendered Chat turn, and sibling-safe uninstall on a
+  fresh Windows runner. PR builds retain only fast contracts and setup
+  fail-before-download tests.
+- **Owner:** team.
+- **Links:** [Issue #21](https://github.com/emv-dev/YoreBot/issues/21),
+  [`scripts/test-windows-first-use.ps1`](scripts/test-windows-first-use.ps1),
+  [`.github/workflows/windows-internal.yml`](.github/workflows/windows-internal.yml).
+
 ### 2026-08-29 — Gate checkout on recorded immutable model provenance
 - **Context:** Access checkout did not identify the included local model and
   remained available when setup had not recorded a reviewed model pin.

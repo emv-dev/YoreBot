@@ -197,7 +197,11 @@ export default function YoreBotSetupScreen() {
   const retry = useCallback(() => setAttempt((value) => value + 1), [])
 
   return (
-    <main className="flex h-svh w-full items-center justify-center bg-background px-6">
+    <main
+      aria-label="YoreBot setup"
+      data-setup-phase={phase}
+      className="flex h-svh w-full items-center justify-center bg-background px-6"
+    >
       <section className="w-full max-w-lg text-center">
         <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-neutral-950 text-2xl font-semibold text-white dark:bg-white dark:text-neutral-950">
           Y

@@ -381,6 +381,78 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   )
 })
 
+test('manual Windows first use drives installed automatic setup into real Chat', () => {
+  const scriptPath = resolve(root, 'scripts/test-windows-first-use.ps1')
+  assert.equal(existsSync(scriptPath), true, 'first-use script is missing')
+
+  const script = read('scripts/test-windows-first-use.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+  const setup = read('web-app/src/containers/YoreBotSetupScreen.tsx')
+  const chatInput = read('web-app/src/containers/ChatInput.tsx')
+  const messages = read('web-app/src/containers/MessageItem.tsx')
+
+  for (const value of [
+    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+    '--remote-debugging-address=127.0.0.1',
+    'http://127.0.0.1:',
+    'aria-label="YoreBot setup"',
+    'data-testid="chat-input"',
+    'aria-label="YoreBot response"',
+    'Reply with exactly YOREBOT_CHAT_OK.',
+    "reply.Contains('YOREBOT_CHAT_OK')",
+    'Qwen3.5-9B-Q4_K_M',
+    '3885219b6810b007914f3a7950a8d1b469d598a5',
+    'sizeBytes: 5_680_522_464',
+    '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8',
+    'Bundled llama.cpp backend ready during startup: b10431/win-cpu-x64',
+    'llamacpp-upstream/backends/b10431/win-cpu-x64',
+    'llamacpp-upstream/backends/b10431/win-vulkan-x64',
+    'Active Chat runtime did not report exact build 10431',
+    'YoreBot installed first-use Chat acceptance passed',
+  ]) {
+    assert.ok(script.includes(value), `first-use proof omits ${value}`)
+  }
+  for (const property of [
+    "PSObject.Properties['id']",
+    "PSObject.Properties['error']",
+    "PSObject.Properties['result']",
+    "PSObject.Properties['exceptionDetails']",
+    "PSObject.Properties['value']",
+  ]) {
+    assert.ok(script.includes(property), `strict CDP parse omits ${property}`)
+  }
+  assert.doesNotMatch(script, /^["']@\S/m)
+  assert.match(script, /replies\.length <= \$baselineReplyCount/)
+  assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
+  assert.doesNotMatch(script, /Stop-Process\s+-Name|taskkill/i)
+  assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
+  assert.match(setup, /aria-label=["']YoreBot setup["']/)
+  assert.match(chatInput, /aria-label=["']Send message["']/)
+  assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
+
+  const firstUse = workflow.indexOf(
+    '- name: Verify installed automatic setup and first Chat response'
+  )
+  const installer = workflow.indexOf(
+    '- name: Smoke fresh NSIS install and uninstall'
+  )
+  const agent = workflow.indexOf(
+    '- name: Verify Downloads Agent on pinned model and CPU runtime'
+  )
+  assert.ok(firstUse >= 0 && firstUse < installer && installer < agent)
+  assert.match(
+    workflow.slice(firstUse, firstUse + 1_200),
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*test-windows-first-use\.ps1/
+  )
+  assert.match(
+    workflow.slice(agent, agent + 300),
+    /if: github\.event_name == 'workflow_dispatch'/
+  )
+  assert.doesNotMatch(workflow, /first_use_chat:/)
+  assert.match(workflow, /timeout-minutes: 55/)
+  assert.match(workflow, /YoreBotSetupScreen\.test\.tsx/)
+})
+
 test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublished', () => {
   const signed = read('.github/workflows/windows-signed-candidate.yml')
   const blocked = read('.github/workflows/release.yml')

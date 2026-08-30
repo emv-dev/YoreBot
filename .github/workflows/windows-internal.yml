@@ -52,7 +52,8 @@ jobs:
           node --test scripts/tests/windows-acceptance-contracts.test.mjs
           foreach ($script in @(
             "scripts/test-windows-installer.ps1",
-            "scripts/test-windows-pinned-model.ps1"
+            "scripts/test-windows-pinned-model.ps1",
+            "scripts/test-windows-first-use.ps1"
           )) {
             $tokens = $null
             $parseErrors = $null
@@ -243,7 +244,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
-          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/YoreBotSetupScreen.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
@@ -284,6 +285,20 @@ jobs:
           path: artifacts/*.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Verify installed automatic setup and first Chat response
+        if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
+        timeout-minutes: 55
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installers = @(Get-ChildItem "artifacts" -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          $workRoot = Join-Path $env:RUNNER_TEMP "yorebot-first-use-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/test-windows-first-use.ps1 -InstallerPath $installers[0].FullName -WorkRoot $workRoot
 
       - name: Smoke fresh NSIS install and uninstall
         shell: pwsh
