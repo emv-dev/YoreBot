@@ -346,11 +346,15 @@ function Connect-YoreBotWebView {
 
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     $lastEndpointError = ''
+    $firstSocketError = ''
+    $lastTargetDiagnostic = ''
     do {
         $Process.Refresh()
         if ($Process.HasExited) {
             throw "YoreBot exited before WebView2 debugging became ready: $($Process.ExitCode)"
         }
+
+        $targets = @()
         try {
             $targets = @(
                 Invoke-RestMethod `
@@ -358,42 +362,87 @@ function Connect-YoreBotWebView {
                     -NoProxy `
                     -TimeoutSec 3
             )
-            $target = $targets | Where-Object {
-                $typeProperty = $_.PSObject.Properties['type']
-                $socketProperty = $_.PSObject.Properties['webSocketDebuggerUrl']
-                $null -ne $typeProperty -and
-                    $typeProperty.Value -eq 'page' -and
-                    $null -ne $socketProperty -and
-                    -not [string]::IsNullOrWhiteSpace($socketProperty.Value)
-            } | Select-Object -First 1
-            if ($null -ne $target) {
-                $uri = [Uri]($target.PSObject.Properties['webSocketDebuggerUrl'].Value)
-                $addresses = @([System.Net.Dns]::GetHostAddresses($uri.Host))
-                if ($uri.Scheme -ne 'ws' -or $uri.Port -ne $Port -or
-                    $addresses.Count -eq 0 -or @(
-                        $addresses | Where-Object {
-                            -not [System.Net.IPAddress]::IsLoopback($_)
-                        }
-                    ).Count -ne 0) {
-                    throw 'WebView2 debugging endpoint is not loopback-only'
-                }
-                $socket = [System.Net.WebSockets.ClientWebSocket]::new()
-                $socket.ConnectAsync(
-                    $uri,
-                    [System.Threading.CancellationToken]::None
-                ).GetAwaiter().GetResult()
-                return $socket
-            }
         } catch {
             $lastEndpointError = $_.Exception.Message
             Start-Sleep -Milliseconds 500
+            continue
+        }
+
+        $pageTargets = @($targets | Where-Object {
+            $typeProperty = $_.PSObject.Properties['type']
+            $socketProperty = $_.PSObject.Properties['webSocketDebuggerUrl']
+            $null -ne $typeProperty -and
+                $typeProperty.Value -eq 'page' -and
+                $null -ne $socketProperty -and
+                -not [string]::IsNullOrWhiteSpace($socketProperty.Value)
+        })
+        $lastTargetDiagnostic = "target_count=$($targets.Count) page_target_count=$($pageTargets.Count)"
+        $target = $pageTargets | Select-Object -First 1
+        if ($null -eq $target) {
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+
+        try {
+            $reportedUri = [Uri]($target.PSObject.Properties['webSocketDebuggerUrl'].Value)
+            $addresses = @([System.Net.Dns]::GetHostAddresses($reportedUri.Host))
+            if ($reportedUri.Scheme -ne 'ws' -or $reportedUri.Port -ne $Port -or
+                -not [string]::IsNullOrEmpty($reportedUri.UserInfo) -or
+                -not [string]::IsNullOrEmpty($reportedUri.Query) -or
+                -not [string]::IsNullOrEmpty($reportedUri.Fragment) -or
+                $reportedUri.AbsolutePath -notmatch '^/devtools/page/[^/?#]+$' -or
+                $addresses.Count -eq 0 -or @(
+                    $addresses | Where-Object {
+                        -not [System.Net.IPAddress]::IsLoopback($_)
+                    }
+                ).Count -ne 0) {
+                throw 'WebView2 debugging endpoint is not loopback-only'
+            }
+            $lastTargetDiagnostic = "$lastTargetDiagnostic reported_host=$($reportedUri.Host) reported_port=$($reportedUri.Port) reported_path=$($reportedUri.AbsolutePath)"
+            $uriBuilder = [System.UriBuilder]::new($reportedUri)
+            $uriBuilder.Host = '127.0.0.1'
+            $uriBuilder.Port = $Port
+            $uri = $uriBuilder.Uri
+        } catch {
+            $lastEndpointError = $_.Exception.Message
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+
+        $socket = [System.Net.WebSockets.ClientWebSocket]::new()
+        try {
+            $socket.ConnectAsync(
+                $uri,
+                [System.Threading.CancellationToken]::None
+            ).GetAwaiter().GetResult()
+            return $socket
+        } catch {
+            $socketError = $_.Exception.ToString()
+            if ([string]::IsNullOrWhiteSpace($firstSocketError)) {
+                $firstSocketError = $socketError
+            }
+            $lastEndpointError = $_.Exception.Message
+            $socket.Dispose()
+            Start-Sleep -Milliseconds 500
         }
     } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not [string]::IsNullOrWhiteSpace($firstSocketError)) {
+        if ($firstSocketError.Length -gt 600) {
+            $firstSocketError = $firstSocketError.Substring(0, 600)
+        }
+        Write-Host "WebView2 first WebSocket diagnostic: $firstSocketError"
+    }
     if (-not [string]::IsNullOrWhiteSpace($lastEndpointError)) {
         if ($lastEndpointError.Length -gt 600) {
             $lastEndpointError = $lastEndpointError.Substring(0, 600)
         }
         Write-Host "WebView2 endpoint diagnostic: $lastEndpointError"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($lastTargetDiagnostic)) {
+        if ($lastTargetDiagnostic.Length -gt 600) {
+            $lastTargetDiagnostic = $lastTargetDiagnostic.Substring(0, 600)
+        }
+        Write-Host "WebView2 target diagnostic: $lastTargetDiagnostic"
     }
     Write-WebViewDiagnostics -Port $Port -Process $Process
     throw 'YoreBot WebView2 debugging endpoint did not become ready'

@@ -427,6 +427,20 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   ]) {
     assert.ok(script.includes(property), `strict CDP parse omits ${property}`)
   }
+  const connectStart = script.indexOf('function Connect-YoreBotWebView')
+  const connectEnd = script.indexOf('\nif (-not (Test-Path -LiteralPath $installer', connectStart)
+  assert.ok(connectStart >= 0 && connectEnd > connectStart)
+  const connect = script.slice(connectStart, connectEnd)
+  assert.match(
+    connect,
+    /\$socket = \[System\.Net\.WebSockets\.ClientWebSocket\]::new\(\)[\s\S]*?try \{[\s\S]*?\.ConnectAsync\([\s\S]*?\} catch \{[\s\S]*?\$socket\.Dispose\(\)/,
+    'a failed CDP WebSocket handshake must dispose its owned socket before retrying'
+  )
+  assert.match(connect, /\$firstSocketError = ''/)
+  assert.match(connect, /WebView2 first WebSocket diagnostic:/)
+  assert.match(connect, /WebView2 target diagnostic:/)
+  assert.match(connect, /\$reportedUri\.AbsolutePath -notmatch '\^\/devtools\/page\//)
+  assert.match(connect, /\$uriBuilder\.Host = '127\.0\.0\.1'/)
   assert.doesNotMatch(script, /^["']@\S/m)
   assert.match(script, /replies\.length > \$baselineReplyCount/)
   assert.match(script, /New-NetFirewallRule[\s\S]*-Program \$serverPath/)
