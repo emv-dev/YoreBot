@@ -650,6 +650,105 @@ test('heavy model smoke is manual-only while installer smoke stays on PR builds'
   )
 })
 
+test('installed Organize my Downloads binds the OS folder and proves visible safe mutations', () => {
+  const home = read('web-app/src/routes/index.tsx')
+  const messages = read('web-app/src/containers/MessageItem.tsx')
+  const locale = read('web-app/src/locales/en/chat.json')
+  const script = read('scripts/test-windows-first-use.ps1')
+  const workflow = read('.github/workflows/windows-internal.yml')
+
+  const selectTask = home.indexOf('async (prompt: string, skillName: string)')
+  const resolveDownloads = home.indexOf('const downloadsPath = await downloadDir()', selectTask)
+  const resolveRoot = home.indexOf('resolveAgentWorkspaceRoot(downloadsPath)', resolveDownloads)
+  const setRoot = home.indexOf('.setPrimaryRoot(TEMPORARY_CHAT_ID', resolveRoot)
+  const setPrompt = home.indexOf('setPrompt(prompt)', setRoot)
+  assert.ok(
+    selectTask >= 0 &&
+      resolveDownloads > selectTask &&
+      resolveRoot > resolveDownloads &&
+      setRoot > resolveRoot &&
+      setPrompt > setRoot,
+    'the actual suggestion must connect Downloads before filling its prompt'
+  )
+  assert.match(home, /toast\.error\(t\('chat:agentTasks\.organizeDownloads\.unavailable'\)\)[\s\S]*?return/)
+  assert.match(locale, /"unavailable":\s*"YoreBot couldn't open your Downloads folder\. Nothing was changed\."/)
+  assert.match(messages, /aria-label=\{[\s\S]*?'YoreBot reply text'/)
+  assert.match(messages, /aria-label="Agent run error"/)
+
+  for (const value of [
+    '{374DE290-123F-4565-9164-39C4925E467B}',
+    'The operating system Downloads folder is not empty; refusing to alter it',
+    "button.innerText.trim() === 'Organize my Downloads'",
+    "localStorage.getItem('agent-mode')",
+    "workspaces?.['temporary-chat']?.primaryRoot",
+    "skill -ceq '/downloads-organizer'",
+    '-UseExistingPrompt',
+    'The Downloads plan mutated disk before acceptance or approval',
+    'Create folder: $documentsPath',
+    'Move: $reportPath → $movedReportPath',
+    "-ApprovalDecisions @('Allow once', 'Allow once')",
+    'Move: $movedReportPath → $reportPath',
+    "-ApprovalDecisions @('Allow once')",
+    "-ApprovalDecisions @('Deny')",
+    'Deny changed the Downloads disk state',
+    'Remove-DownloadsFixture -Root $downloadsRoot',
+    'Downloads did not return to its empty pre-test state',
+  ]) {
+    assert.ok(script.includes(value), `installed Downloads proof omits ${value}`)
+  }
+
+  const exactTask = script.indexOf(
+    "button.innerText.trim() === 'Organize my Downloads'"
+  )
+  const plan = script.indexOf('$planReply = Invoke-YoreBotAgentTurn', exactTask)
+  const planSnapshot = script.indexOf(
+    'The Downloads plan mutated disk before acceptance or approval',
+    plan
+  )
+  const apply = script.indexOf('$applyReply = Invoke-YoreBotAgentTurn', planSnapshot)
+  const undo = script.indexOf('$undoReply = Invoke-YoreBotAgentTurn', apply)
+  const deny = script.indexOf('$denyReply = Invoke-YoreBotAgentTurn', undo)
+  const denySnapshot = script.indexOf('Deny changed the Downloads disk state', deny)
+  const networkAssert = script.indexOf('Assert-CdpNetworkAudit', denySnapshot)
+  assert.ok(
+    exactTask >= 0 &&
+      plan > exactTask &&
+      planSnapshot > plan &&
+      apply > planSnapshot &&
+      undo > apply &&
+      deny > undo &&
+      denySnapshot > deny &&
+      networkAssert > denySnapshot,
+    'plan, apply, undo, deny, and network proof must remain one ordered installed UI ritual'
+  )
+  const turnHelper = script.slice(
+    script.indexOf('function Invoke-YoreBotAgentTurn'),
+    script.indexOf('\nif (-not (Test-Path -LiteralPath $installer')
+  )
+  assert.match(
+    turnHelper,
+    /ExpectedApprovalPreviews = @\(\)[\s\S]*?approvalIndex -ge \$ExpectedApprovalPreviews\.Count/
+  )
+  assert.match(
+    script,
+    /if \(\$downloadsFixtureActive[\s\S]*?Remove-DownloadsFixture -Root \$downloadsRoot/
+  )
+  assert.doesNotMatch(script, /Invoke-PinnedDownload|RunDownloadsAgentAcceptance/)
+
+  const firstUse = workflow.indexOf(
+    '- name: Verify installed automatic setup, Chat, and Downloads task'
+  )
+  const directHarness = workflow.indexOf(
+    '- name: Verify Downloads Agent on pinned model and CPU runtime'
+  )
+  assert.ok(firstUse >= 0 && directHarness > firstUse)
+  assert.match(
+    workflow.slice(firstUse, directHarness),
+    /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'[\s\S]*test-windows-first-use\.ps1/
+  )
+  assert.match(workflow, /@janhq\/web-app test[^\n]*src\/routes\/index\.test\.tsx/)
+})
+
 test('manual Windows first use drives installed automatic setup into real Chat', () => {
   const scriptPath = resolve(root, 'scripts/test-windows-first-use.ps1')
   assert.equal(existsSync(scriptPath), true, 'first-use script is missing')
@@ -685,7 +784,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     'DevToolsActivePort',
     'Get-NetTCPConnection',
     "Name = 'msedgewebview2.exe'",
-    'YoreBot installed first-use Chat acceptance passed',
+    'YoreBot installed first-use Chat and Downloads UI acceptance passed',
   ]) {
     assert.ok(script.includes(value), `first-use proof omits ${value}`)
   }
@@ -814,7 +913,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   )
 
   const firstUse = workflow.indexOf(
-    '- name: Verify installed automatic setup and first Chat response'
+    '- name: Verify installed automatic setup, Chat, and Downloads task'
   )
   const installer = workflow.indexOf(
     '- name: Smoke fresh NSIS install and uninstall'
@@ -878,7 +977,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
     /if: github\.event_name == 'workflow_dispatch'/
   )
   assert.doesNotMatch(workflow, /first_use_chat:/)
-  assert.match(workflow, /timeout-minutes: 55/)
+  assert.match(workflow, /timeout-minutes: 90/)
   assert.match(workflow, /YoreBotSetupScreen\.test\.tsx/)
 })
 

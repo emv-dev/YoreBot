@@ -309,6 +309,26 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-30 — Connect Downloads before starting the advertised task
+- **Context:** The consumer “Organize my Downloads” suggestion selected a
+  prompt and skill but no folder. Starting it could therefore use YoreBot's
+  internal fallback workspace instead of the operating-system Downloads
+  folder named by the UI.
+- **Decision:** Resolve and connect the OS Downloads folder as the editable
+  primary root before filling the suggestion. If that folder cannot be
+  resolved, show a plain failure and do not select or start the task. Extend
+  the existing manual installed-app CDP/WFP ritual to click the real
+  suggestion and prove plan-only, visible Allow once approvals, exact apply,
+  undo, denial without disk changes, and scoped fixture restoration.
+- **Consequences:** The advertised entry point no longer silently acts in an
+  internal workspace. Other Agent entry points retain their existing workspace
+  behavior. The 5.68 GB installed UI proof remains manual-only and makes no
+  broader Agent or performance claim.
+- **Owner:** team.
+- **Links:** [Issue #25](https://github.com/emv-dev/YoreBot/issues/25),
+  [`web-app/src/routes/index.tsx`](web-app/src/routes/index.tsx),
+  [`scripts/test-windows-first-use.ps1`](scripts/test-windows-first-use.ps1).
+
 ### 2026-08-30 — Audit real Windows work after pinned downloads
 - **Context:** Static network guards did not prove that installed Chat and the
   Downloads Agent stay local while handling real user content.

@@ -253,7 +253,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           yarn workspace @janhq/web-app tsc -b --pretty false
-          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/YoreBotSetupScreen.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
+          yarn workspace @janhq/web-app test src/constants/yorebot-models.test.ts src/services/deeplink/parse.test.ts src/routes/index.test.tsx src/components/left-sidebar/__tests__/NavMain.test.tsx src/components/left-sidebar/__tests__/AccessStatus.test.tsx src/containers/dialogs/AgentApprovalDialog.test.tsx src/containers/dialogs/YoreBotAccessDialog.test.tsx src/containers/__tests__/YoreBotSetupScreen.test.tsx src/containers/__tests__/ChatAgentWorkspace.test.tsx src/containers/__tests__/RenderMarkdown.security.test.tsx src/containers/__tests__/HtmlArtifact.security.test.tsx src/services/__tests__/yorebot-auto-egress.test.ts
           Push-Location extensions
           yarn workspace @janhq/llamacpp-upstream-extension test:run src/test/backend.test.ts
           Pop-Location
@@ -340,9 +340,9 @@ jobs:
             -LiteralPath $installers[0].FullName `
             -Destination 'first-use-artifacts/YoreBot-first-use-test-only.exe'
 
-      - name: Verify installed automatic setup and first Chat response
+      - name: Verify installed automatic setup, Chat, and Downloads task
         if: github.event_name == 'workflow_dispatch' && inputs.hardware_profile == 'ordinary-16gb'
-        timeout-minutes: 55
+        timeout-minutes: 90
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'

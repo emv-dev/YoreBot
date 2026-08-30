@@ -48,6 +48,9 @@ $cdpPort = 9229
 $createdWorkRoot = $false
 $installed = $false
 $passed = $false
+$downloadsRoot = ''
+$createdDownloadsRoot = $false
+$downloadsFixtureActive = $false
 $script:CaptureCdpNetwork = $false
 $script:CdpNetworkEvents = [System.Collections.Generic.List[object]]::new()
 
@@ -61,6 +64,150 @@ function Test-EqualOrChild {
             $canonicalRoot + [char]92,
             [System.StringComparison]::OrdinalIgnoreCase
         )
+}
+
+function Get-ComparableWindowsPath {
+    param([Parameter(Mandatory)][string] $Value)
+
+    $path = [System.IO.Path]::GetFullPath($Value)
+    if ($path.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $path = '\\' + $path.Substring(8)
+    } elseif ($path.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $path = $path.Substring(4)
+    }
+    return $path.TrimEnd([char]92)
+}
+
+function Get-WindowsDownloadsPath {
+    $knownFolder = '{374DE290-123F-4565-9164-39C4925E467B}'
+    $userShellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $raw = Get-ItemPropertyValue `
+        -LiteralPath $userShellFolders `
+        -Name $knownFolder `
+        -ErrorAction Stop
+    $expanded = [Environment]::ExpandEnvironmentVariables([string]$raw)
+    if ([string]::IsNullOrWhiteSpace($expanded)) {
+        throw 'The operating system Downloads folder is unavailable'
+    }
+    return [System.IO.Path]::GetFullPath($expanded).TrimEnd([char]92)
+}
+
+function Get-DownloadsSnapshot {
+    param([Parameter(Mandatory)][string] $Root)
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "Downloads snapshot root is missing: $Root"
+    }
+    $entries = @(
+        Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop |
+            Sort-Object FullName |
+            ForEach-Object {
+                if (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Downloads fixture contains an unsupported reparse point: $($_.FullName)"
+                }
+                $relative = [System.IO.Path]::GetRelativePath($Root, $_.FullName).Replace('\', '/')
+                if ($_.PSIsContainer) {
+                    [ordered]@{ path = $relative; kind = 'directory' }
+                } else {
+                    [ordered]@{
+                        path = $relative
+                        kind = 'file'
+                        size = [int64]$_.Length
+                        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    }
+                }
+            }
+    )
+    if ($entries.Count -gt 16) {
+        throw "Downloads fixture exceeded the bounded 16-entry acceptance inventory: $($entries.Count)"
+    }
+    return ConvertTo-Json -InputObject @($entries) -Depth 4 -Compress
+}
+
+function Assert-ExactDownloadsPaths {
+    param(
+        [Parameter(Mandatory)][string] $Root,
+        [Parameter(Mandatory)][string[]] $Expected
+    )
+
+    $actual = @(
+        Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop |
+            ForEach-Object {
+                [System.IO.Path]::GetRelativePath($Root, $_.FullName).Replace('\', '/')
+            } |
+            Sort-Object
+    )
+    $expectedSorted = @($Expected | Sort-Object)
+    if (($actual -join "`n") -cne ($expectedSorted -join "`n")) {
+        throw "Downloads disk state changed: expected=[$($expectedSorted -join ',')] actual=[$($actual -join ',')]"
+    }
+}
+
+function Assert-DownloadsSentinel {
+    param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Value)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Downloads sentinel is missing: $Path"
+    }
+    if ((Get-Content -LiteralPath $Path -Raw) -cne $Value) {
+        throw "Downloads sentinel content changed: $Path"
+    }
+}
+
+function Assert-TextContainsAll {
+    param(
+        [Parameter(Mandatory)][string] $Value,
+        [Parameter(Mandatory)][string[]] $Expected,
+        [Parameter(Mandatory)][string] $Description
+    )
+
+    $normalized = $Value.Replace('\', '/')
+    foreach ($term in $Expected) {
+        if ($normalized.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "$Description omitted [$term]: $Value"
+        }
+    }
+}
+
+function Assert-TextContainsAny {
+    param(
+        [Parameter(Mandatory)][string] $Value,
+        [Parameter(Mandatory)][string[]] $Expected,
+        [Parameter(Mandatory)][string] $Description
+    )
+
+    $normalized = $Value.Replace('\', '/')
+    foreach ($term in $Expected) {
+        if ($normalized.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return
+        }
+    }
+    throw "$Description omitted every required outcome term [$($Expected -join ',')]: $Value"
+}
+
+function Remove-DownloadsFixture {
+    param([Parameter(Mandatory)][string] $Root)
+
+    foreach ($path in @(
+        (Join-Path $Root 'quarterly-report.pdf'),
+        (Join-Path $Root 'mystery.download'),
+        (Join-Path $Root 'Documents/quarterly-report.pdf')
+    )) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    $documents = Join-Path $Root 'Documents'
+    if (Test-Path -LiteralPath $documents -PathType Container) {
+        $remaining = @(Get-ChildItem -LiteralPath $documents -Force -ErrorAction Stop)
+        if ($remaining.Count -ne 0) {
+            throw 'Refusing to remove a nonempty Downloads/Documents fixture folder'
+        }
+        Remove-Item -LiteralPath $documents -Force
+    }
+    if ((Get-DownloadsSnapshot -Root $Root) -cne '[]') {
+        throw 'Downloads did not return to its empty pre-test state'
+    }
 }
 
 function Get-ProcessesAtExactPath {
@@ -643,6 +790,184 @@ function Connect-YoreBotWebView {
     throw 'YoreBot WebView2 debugging endpoint did not become ready'
 }
 
+function Invoke-YoreBotAgentTurn {
+    param(
+        [Parameter(Mandatory)][System.Net.WebSockets.ClientWebSocket] $Socket,
+        [Parameter(Mandatory)][System.Diagnostics.Process] $AppProcess,
+        [Parameter(Mandatory)][System.Diagnostics.Process] $ServerProcess,
+        [Parameter(Mandatory)][string] $Prompt,
+        [string[]] $ExpectedApprovalPreviews = @(),
+        [string[]] $ApprovalDecisions = @(),
+        [switch] $UseExistingPrompt,
+        [int] $TimeoutMinutes = 20
+    )
+
+    if ($ExpectedApprovalPreviews.Count -ne $ApprovalDecisions.Count) {
+        throw 'Every expected approval preview needs one decision'
+    }
+    foreach ($decision in $ApprovalDecisions) {
+        if ($decision -notin @('Allow once', 'Deny')) {
+            throw "Unsupported UI approval decision: $decision"
+        }
+    }
+
+    $promptJson = ConvertTo-Json -InputObject $Prompt -Compress
+    $baselineJson = Invoke-CdpExpression -Socket $Socket -Expression @'
+JSON.stringify({
+  users: document.querySelectorAll('[aria-label="Your message"]').length,
+  replies: document.querySelectorAll('[aria-label="YoreBot response"]').length,
+})
+'@
+    $baseline = $baselineJson | ConvertFrom-Json
+
+    if ($UseExistingPrompt) {
+        $actualPrompt = Invoke-CdpExpression -Socket $Socket -Expression @'
+document.querySelector('[data-testid="chat-input"]')?.value ?? ''
+'@
+        if ($actualPrompt -cne $Prompt) {
+            throw 'The actual Downloads suggestion did not fill its product prompt'
+        }
+    } else {
+        $actualPrompt = Invoke-CdpExpression -Socket $Socket -Expression @"
+(() => {
+  const input = document.querySelector('[data-testid="chat-input"]');
+  if (!(input instanceof HTMLTextAreaElement)) return '';
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+  setter?.call(input, $promptJson);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return input.value;
+})()
+"@
+        if ($actualPrompt -cne $Prompt) {
+            throw 'The actual Agent input did not accept the required prompt'
+        }
+    }
+
+    $sendReadyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $sendReady = $false
+    do {
+        $sendReady = Invoke-CdpExpression -Socket $Socket -Expression @'
+(() => {
+  const button = document.querySelector('[aria-label="Send message"]');
+  return button instanceof HTMLButtonElement && !button.disabled;
+})()
+'@
+        if ($sendReady) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $sendReadyDeadline)
+    if (-not $sendReady) { throw 'The actual Agent send control did not become ready' }
+
+    $clicked = Invoke-CdpExpression -Socket $Socket -Expression @'
+(() => {
+  const button = document.querySelector('[aria-label="Send message"]');
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+  button.click();
+  return true;
+})()
+'@
+    if (-not $clicked) { throw 'The actual Agent send control could not be invoked' }
+
+    $approvalIndex = 0
+    $deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
+    do {
+        $AppProcess.Refresh()
+        $ServerProcess.Refresh()
+        if ($AppProcess.HasExited -or $ServerProcess.HasExited) {
+            throw 'YoreBot or its exact local model exited during the Downloads task'
+        }
+
+        $stateJson = Invoke-CdpExpression -Socket $Socket -Expression @"
+JSON.stringify((() => {
+  const users = [...document.querySelectorAll('[aria-label="Your message"]')];
+  const replies = [...document.querySelectorAll('[aria-label="YoreBot response"]')];
+  const newest = replies.length > $([int]$baseline.replies) ? replies.at(-1) : null;
+  const dialog = [...document.querySelectorAll('[role="dialog"]')]
+    .find((candidate) => candidate.innerText.includes('Agent approval required')) ?? null;
+  const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
+  return {
+    userObserved: users.length > $([int]$baseline.users) &&
+      users.slice($([int]$baseline.users)).some((message) => message.innerText.includes($promptJson)),
+    replyCount: replies.length,
+    reply: newest
+      ? [...newest.querySelectorAll('[aria-label="YoreBot reply text"]')]
+          .map((part) => part.innerText).join('\n')
+      : '',
+    complete: document.querySelector('[aria-label="Send message"]') instanceof HTMLButtonElement,
+    error: Boolean(newest?.querySelector('[aria-label="Agent run error"]')?.innerText.trim()) ||
+      Boolean(document.querySelector('[aria-label="Chat generation error"]')?.innerText.trim()),
+    approval: Boolean(dialog),
+    preview: dialog?.querySelector('pre')?.innerText.trim() ?? '',
+    allowOnce: buttons.some((button) => button.innerText.trim() === 'Allow once' && !button.disabled),
+    deny: buttons.some((button) => button.innerText.trim() === 'Deny' && !button.disabled),
+  };
+})())
+"@
+        $state = $stateJson | ConvertFrom-Json
+        if ($state.error) {
+            throw 'Actual Agent UI reported an error during the Downloads task'
+        }
+        if ($state.approval) {
+            if (-not $state.userObserved) {
+                throw 'An Agent approval appeared before the user request rendered'
+            }
+            if ($approvalIndex -ge $ExpectedApprovalPreviews.Count) {
+                throw "Unexpected extra Agent approval: $($state.preview)"
+            }
+            $expectedPreview = $ExpectedApprovalPreviews[$approvalIndex]
+            if ([string]$state.preview -cne $expectedPreview) {
+                throw "Agent approval preview changed: expected=[$expectedPreview] actual=[$($state.preview)]"
+            }
+            $decision = $ApprovalDecisions[$approvalIndex]
+            if (($decision -eq 'Allow once' -and -not $state.allowOnce) -or
+                ($decision -eq 'Deny' -and -not $state.deny)) {
+                throw "Agent approval did not expose the required visible decision: $decision"
+            }
+            $decisionJson = ConvertTo-Json -InputObject $decision -Compress
+            $decisionClicked = Invoke-CdpExpression -Socket $Socket -Expression @"
+(() => {
+  const dialog = [...document.querySelectorAll('[role="dialog"]')]
+    .find((candidate) => candidate.innerText.includes('Agent approval required'));
+  if (!dialog) return false;
+  const buttons = [...dialog.querySelectorAll('button')]
+    .filter((button) => button.innerText.trim() === $decisionJson && !button.disabled);
+  if (buttons.length !== 1) return false;
+  buttons[0].click();
+  return true;
+})()
+"@
+            if (-not $decisionClicked) {
+                throw "Could not invoke the visible Agent decision: $decision"
+            }
+            $approvalIndex += 1
+            $approvalChangeDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 250
+                $currentPreview = Invoke-CdpExpression -Socket $Socket -Expression @'
+([...document.querySelectorAll('[role="dialog"]')]
+  .find((candidate) => candidate.innerText.includes('Agent approval required'))
+  ?.querySelector('pre')?.innerText.trim()) ?? ''
+'@
+                if ($currentPreview -cne $expectedPreview) { break }
+            } while ([DateTime]::UtcNow -lt $approvalChangeDeadline)
+            if ($currentPreview -ceq $expectedPreview) {
+                throw 'Agent approval did not resolve after the visible decision'
+            }
+            continue
+        }
+        if ($state.userObserved -and
+            [int]$state.replyCount -gt [int]$baseline.replies -and
+            $state.complete -and
+            -not [string]::IsNullOrWhiteSpace([string]$state.reply)) {
+            if ($approvalIndex -ne $ExpectedApprovalPreviews.Count) {
+                throw "Agent completed after $approvalIndex of $($ExpectedApprovalPreviews.Count) required approvals"
+            }
+            return [string]$state.reply
+        }
+        Start-Sleep -Seconds 1
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Actual Agent UI did not complete the Downloads task before the deadline'
+}
+
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Installer does not exist: $installer"
 }
@@ -674,6 +999,18 @@ foreach ($value in @(
 try {
     New-Item -ItemType Directory -Path $workRootFull | Out-Null
     $createdWorkRoot = $true
+
+    # The UI task must bind the operating system's actual Downloads known
+    # folder. Keep this runner fixture isolated and fail before the model
+    # download rather than touching pre-existing user files.
+    $downloadsRoot = Get-WindowsDownloadsPath
+    if (-not (Test-Path -LiteralPath $downloadsRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $downloadsRoot | Out-Null
+        $createdDownloadsRoot = $true
+    }
+    if ((Get-DownloadsSnapshot -Root $downloadsRoot) -cne '[]') {
+        throw 'The operating system Downloads folder is not empty; refusing to alter it'
+    }
 
     # The manual-only installer embeds this loopback debugging port through a
     # temporary Tauri build overlay. Fail before install if it is unavailable.
@@ -1023,6 +1360,211 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         throw 'Actual Chat UI did not complete with the expected local response marker'
     }
 
+    Set-Content `
+        -LiteralPath (Join-Path $downloadsRoot 'quarterly-report.pdf') `
+        -Value 'REPORT_SENTINEL_481' `
+        -NoNewline
+    Set-Content `
+        -LiteralPath (Join-Path $downloadsRoot 'mystery.download') `
+        -Value 'UNCERTAIN_SENTINEL_927' `
+        -NoNewline
+    $downloadsFixtureActive = $true
+    Assert-ExactDownloadsPaths -Root $downloadsRoot -Expected @(
+        'mystery.download',
+        'quarterly-report.pdf'
+    )
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'quarterly-report.pdf') `
+        -Value 'REPORT_SENTINEL_481'
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'mystery.download') `
+        -Value 'UNCERTAIN_SENTINEL_927'
+    $planSnapshot = Get-DownloadsSnapshot -Root $downloadsRoot
+
+    $taskReady = $false
+    $taskReadyDeadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        $taskStateJson = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
+JSON.stringify((() => {
+  const agent = [...document.querySelectorAll('button')]
+    .find((button) => button.innerText.trim() === 'Agent' && button.hasAttribute('aria-pressed'));
+  if (agent && agent.getAttribute('aria-pressed') !== 'true' && !agent.disabled) agent.click();
+  const task = [...document.querySelectorAll('button')]
+    .find((button) => button.innerText.trim() === 'Organize my Downloads');
+  return {
+    agent: agent?.getAttribute('aria-pressed') === 'true',
+    task: Boolean(task),
+  };
+})())
+'@
+        $taskState = $taskStateJson | ConvertFrom-Json
+        if ($taskState.agent -and $taskState.task) {
+            $taskReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $taskReadyDeadline)
+    if (-not $taskReady) {
+        throw 'The actual Agent mode did not expose Organize my Downloads'
+    }
+
+    $taskClicked = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
+(() => {
+  const matches = [...document.querySelectorAll('button')]
+    .filter((button) => button.innerText.trim() === 'Organize my Downloads');
+  if (matches.length !== 1) return false;
+  matches[0].click();
+  return true;
+})()
+'@
+    if (-not $taskClicked) {
+        throw 'The actual Organize my Downloads suggestion could not be invoked'
+    }
+
+    $downloadsPrompt = 'Organize my Downloads folder. First show me exactly what you propose. Move files only after I accept the plan and approve each move. Never delete or overwrite anything.'
+    $taskBound = $false
+    $taskBoundDeadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        $taskBindingJson = Invoke-CdpExpression -Socket $cdpSocket -Expression @'
+JSON.stringify((() => {
+  let persisted = null;
+  try { persisted = JSON.parse(localStorage.getItem('agent-mode') ?? 'null'); } catch {}
+  const root = persisted?.state?.workspaces?.['temporary-chat']?.primaryRoot ?? null;
+  return {
+    prompt: document.querySelector('[data-testid="chat-input"]')?.value ?? '',
+    skill: document.querySelector('[data-testid="agent-skill-inline-token"]')?.innerText ?? '',
+    root,
+  };
+})())
+'@
+        $taskBinding = $taskBindingJson | ConvertFrom-Json
+        if ($null -ne $taskBinding.root -and
+            $taskBinding.prompt -ceq $downloadsPrompt -and
+            $taskBinding.skill -ceq '/downloads-organizer') {
+            $taskBound = $true
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $taskBoundDeadline)
+    if (-not $taskBound) {
+        throw 'The actual Downloads suggestion did not bind its folder, prompt, and bundled skill'
+    }
+    $boundDownloadsRoot = [string]$taskBinding.root.path
+    if ((Get-ComparableWindowsPath -Value $boundDownloadsRoot) -ine
+        (Get-ComparableWindowsPath -Value $downloadsRoot)) {
+        throw "The Downloads suggestion bound the wrong root: $boundDownloadsRoot"
+    }
+    if ($taskBinding.root.canEdit -ne $true) {
+        throw 'The Downloads suggestion did not grant explicit edit access to its primary root'
+    }
+    if ([string]$taskBinding.root.name -cne 'Downloads') {
+        throw "The Downloads suggestion exposed an unexpected root name: $($taskBinding.root.name)"
+    }
+
+    $planReply = Invoke-YoreBotAgentTurn `
+        -Socket $cdpSocket `
+        -AppProcess $appProcess `
+        -ServerProcess $serverProcess `
+        -Prompt $downloadsPrompt `
+        -UseExistingPrompt
+    if ((Get-DownloadsSnapshot -Root $downloadsRoot) -cne $planSnapshot) {
+        throw 'The Downloads plan mutated disk before acceptance or approval'
+    }
+    Assert-TextContainsAll -Value $planReply -Expected @(
+        'quarterly-report.pdf',
+        'Documents/quarterly-report.pdf',
+        'mystery.download'
+    ) -Description 'Downloads plan'
+
+    $documentsPath = Join-Path $boundDownloadsRoot 'Documents'
+    $reportPath = Join-Path $boundDownloadsRoot 'quarterly-report.pdf'
+    $movedReportPath = Join-Path $documentsPath 'quarterly-report.pdf'
+    $applyPrompt = 'I explicitly accept that exact proposal. Use only these relative paths: `quarterly-report.pdf`, `Documents`, and `Documents/quarterly-report.pdf`. Do not announce intentions or call `reply` before executing. Start by calling `os.fs.mkdir` exactly once for `Documents`; after it succeeds, call `os.fs.move` exactly once from `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not move `mystery.download`. After both accepted actions succeed, list `.` and `Documents`, then call `reply` with the exact moved and untouched paths.'
+    $applyReply = Invoke-YoreBotAgentTurn `
+        -Socket $cdpSocket `
+        -AppProcess $appProcess `
+        -ServerProcess $serverProcess `
+        -Prompt $applyPrompt `
+        -ExpectedApprovalPreviews @(
+            "Create folder: $documentsPath",
+            "Move: $reportPath → $movedReportPath"
+        ) `
+        -ApprovalDecisions @('Allow once', 'Allow once')
+    Assert-ExactDownloadsPaths -Root $downloadsRoot -Expected @(
+        'Documents',
+        'Documents/quarterly-report.pdf',
+        'mystery.download'
+    )
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'Documents/quarterly-report.pdf') `
+        -Value 'REPORT_SENTINEL_481'
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'mystery.download') `
+        -Value 'UNCERTAIN_SENTINEL_927'
+    Assert-TextContainsAll -Value $applyReply -Expected @(
+        'quarterly-report.pdf',
+        'Documents/quarterly-report.pdf',
+        'mystery.download'
+    ) -Description 'Downloads apply summary'
+
+    $undoPrompt = 'Undo the one successful move from this same session using only relative paths: move `Documents/quarterly-report.pdf` back to `quarterly-report.pdf`. Do not remove `Documents` or touch `mystery.download`. After the approved reverse move succeeds, list `.` and `Documents`, then reply with the exact reverse-move source `Documents/quarterly-report.pdf`, restored destination `quarterly-report.pdf`, and untouched path `mystery.download`.'
+    $undoReply = Invoke-YoreBotAgentTurn `
+        -Socket $cdpSocket `
+        -AppProcess $appProcess `
+        -ServerProcess $serverProcess `
+        -Prompt $undoPrompt `
+        -ExpectedApprovalPreviews @(
+            "Move: $movedReportPath → $reportPath"
+        ) `
+        -ApprovalDecisions @('Allow once')
+    Assert-ExactDownloadsPaths -Root $downloadsRoot -Expected @(
+        'Documents',
+        'mystery.download',
+        'quarterly-report.pdf'
+    )
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'quarterly-report.pdf') `
+        -Value 'REPORT_SENTINEL_481'
+    Assert-DownloadsSentinel `
+        -Path (Join-Path $downloadsRoot 'mystery.download') `
+        -Value 'UNCERTAIN_SENTINEL_927'
+    Assert-TextContainsAll -Value $undoReply -Expected @(
+        'quarterly-report.pdf',
+        'mystery.download'
+    ) -Description 'Downloads undo summary'
+    Assert-TextContainsAny -Value $undoReply -Expected @(
+        'back',
+        'restored',
+        'root'
+    ) -Description 'Downloads undo summary'
+
+    $deniedSnapshot = Get-DownloadsSnapshot -Root $downloadsRoot
+    $denyPrompt = 'This exact plan was already reviewed and I explicitly accept it: move `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. Do not announce intentions or call `reply` before executing. Your first call must be `os.fs.move` exactly once from `quarterly-report.pdf` to `Documents/quarterly-report.pdf`. The approval outcome is unknown. Only after observing the actual tool outcome may you call `reply`; never retry or create anything, and report that the move from `quarterly-report.pdf` to `Documents/quarterly-report.pdf` was denied.'
+    $denyReply = Invoke-YoreBotAgentTurn `
+        -Socket $cdpSocket `
+        -AppProcess $appProcess `
+        -ServerProcess $serverProcess `
+        -Prompt $denyPrompt `
+        -ExpectedApprovalPreviews @(
+            "Move: $reportPath → $movedReportPath"
+        ) `
+        -ApprovalDecisions @('Deny')
+    if ((Get-DownloadsSnapshot -Root $downloadsRoot) -cne $deniedSnapshot) {
+        throw 'Deny changed the Downloads disk state'
+    }
+    Assert-TextContainsAll -Value $denyReply -Expected @(
+        'quarterly-report.pdf',
+        'Documents/quarterly-report.pdf'
+    ) -Description 'Downloads denial summary'
+    Assert-TextContainsAny -Value $denyReply -Expected @(
+        'denied',
+        'declined',
+        'not approved'
+    ) -Description 'Downloads denial summary'
+
+    Remove-DownloadsFixture -Root $downloadsRoot
+    $downloadsFixtureActive = $false
+
     # Flush queued CDP events before closing the observation window.
     Start-Sleep -Seconds 1
     Invoke-CdpExpression -Socket $cdpSocket -Expression 'true' | Out-Null
@@ -1081,7 +1623,7 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     }
 
     $passed = $true
-    Write-Host "YoreBot installed first-use Chat acceptance passed: model_id=$modelId model_revision=$modelRevision model_size_bytes=$modelSize model_sha256=$modelSha256 bundled_runtime=b10431/win-cpu-x64 active_runtime_build=10431 response_marker=present result=pass"
+    Write-Host "YoreBot installed first-use Chat and Downloads UI acceptance passed: model_id=$modelId model_revision=$modelRevision model_size_bytes=$modelSize model_sha256=$modelSha256 bundled_runtime=b10431/win-cpu-x64 active_runtime_build=10431 response_marker=present downloads_plan=unchanged approvals=4 apply=exact undo=exact deny=unchanged result=pass"
 } catch {
     if ($null -ne $appProcess) {
         Write-FirstUseDiagnostics -StdoutPath $appStdoutPath -StderrPath $appStderrPath
@@ -1103,6 +1645,26 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
     if ($installed -and (Test-Path -LiteralPath $uninstallerPath -PathType Leaf)) {
         Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait | Out-Null
     }
+    if ($downloadsFixtureActive -and
+        -not [string]::IsNullOrWhiteSpace($downloadsRoot) -and
+        (Test-Path -LiteralPath $downloadsRoot -PathType Container)) {
+        try {
+            Remove-DownloadsFixture -Root $downloadsRoot
+        } catch {
+            Write-Warning "Downloads fixture cleanup failed: $($_.Exception.Message)"
+            if ($passed) { throw }
+        }
+    }
+    if ($createdDownloadsRoot -and
+        -not [string]::IsNullOrWhiteSpace($downloadsRoot) -and
+        (Test-Path -LiteralPath $downloadsRoot -PathType Container)) {
+        $remainingDownloads = @(Get-ChildItem -LiteralPath $downloadsRoot -Force)
+        if ($remainingDownloads.Count -eq 0) {
+            Remove-Item -LiteralPath $downloadsRoot -Force
+        } elseif ($passed) {
+            throw 'The test-created operating system Downloads folder is not empty after cleanup'
+        }
+    }
     if ($createdWorkRoot -and (Test-Path -LiteralPath $workRootFull)) {
         Remove-Item -LiteralPath $workRootFull -Recurse -Force
     }
@@ -1110,6 +1672,6 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
         Remove-Item -LiteralPath $dataSibling -Recurse -Force
     }
     if (-not $passed) {
-        Write-Host 'YoreBot installed first-use Chat acceptance failed.'
+        Write-Host 'YoreBot installed first-use Chat and Downloads UI acceptance failed.'
     }
 }
