@@ -389,6 +389,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   const workflow = read('.github/workflows/windows-internal.yml')
   const setup = read('web-app/src/containers/YoreBotSetupScreen.tsx')
   const chatInput = read('web-app/src/containers/ChatInput.tsx')
+  const threadRoute = read('web-app/src/routes/threads/$threadId.tsx')
   const messages = read('web-app/src/containers/MessageItem.tsx')
 
   for (const value of [
@@ -428,7 +429,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.doesNotMatch(script, /tokens?\s*(\/|per)\s*second|throughput|benchmark/i)
   assert.match(setup, /aria-label=["']YoreBot setup["']/)
   assert.match(chatInput, /aria-label=["']Send message["']/)
-  assert.match(chatInput, /aria-label=["']Chat error["']/)
+  assert.match(threadRoute, /aria-label=["']Chat generation error["']/)
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
   const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
   const completed = script.indexOf('$chatCompleted = $true')
@@ -436,7 +437,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.ok(marker >= 0 && completed > marker && stopApp > completed)
   assert.match(
     script.slice(marker, stopApp),
-    /aria-label="Send message"[\s\S]*aria-label="Chat error"/
+    /aria-label="Send message"[\s\S]*aria-label="Chat generation error"/
   )
   const uninstall = script.indexOf('$uninstall = Start-Process')
   const orphanCheck = script.indexOf('YoreBot llama-server survived uninstall')

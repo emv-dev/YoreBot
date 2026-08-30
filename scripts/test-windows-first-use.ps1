@@ -591,7 +591,7 @@ document.querySelectorAll('[aria-label="YoreBot response"]').length
   return JSON.stringify({
     marker: reply.includes('YOREBOT_CHAT_OK'),
     complete: document.querySelector('[aria-label="Send message"]') instanceof HTMLButtonElement,
-    error: Boolean(document.querySelector('[aria-label="Chat error"]')?.innerText.trim()),
+    error: Boolean(document.querySelector('[aria-label="Chat generation error"]')?.innerText.trim()),
   });
 })()
 "@
