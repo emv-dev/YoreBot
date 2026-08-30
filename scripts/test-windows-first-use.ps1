@@ -606,6 +606,7 @@ function Connect-YoreBotWebView {
                 $uri,
                 [System.Threading.CancellationToken]::None
             ).GetAwaiter().GetResult()
+            Write-Host "WebView2 selected target: $lastTargetDiagnostic"
             return $socket
         } catch {
             $socketError = $_.Exception.ToString()
@@ -896,6 +897,12 @@ JSON.stringify({
     }
     foreach ($candidate in $webViewProcesses) {
         $processId = [int]$candidate.PSObject.Properties['ProcessId'].Value
+        $parentProperty = $candidate.PSObject.Properties['ParentProcessId']
+        $commandProperty = $candidate.PSObject.Properties['CommandLine']
+        $parentId = if ($null -eq $parentProperty) { 0 } else { [int]$parentProperty.Value }
+        $commandLine = if ($null -eq $commandProperty) { '<missing>' } else {
+            Get-BoundedCdpText -Value $commandProperty.Value -Limit 1200
+        }
         $path = [System.IO.Path]::GetFullPath(
             [string]$candidate.PSObject.Properties['ExecutablePath'].Value
         )
@@ -904,7 +911,8 @@ JSON.stringify({
             -State $networkAudit `
             -Process $process `
             -Path $path `
-            -Role 'yorebot-webview2'
+            -Role 'yorebot-webview2' `
+            -DiagnosticContext "parent=$parentId command_line=$commandLine"
     }
     $script:CdpNetworkEvents.Clear()
     $script:CaptureCdpNetwork = $true

@@ -318,16 +318,24 @@ Append-only. Newest at top. Each entry follows this shape:
   rules for exact observed YoreBot, llama-server, WebView2, and Agent-test
   executable paths. Require a live process-attributed WFP self-probe, observe
   WebView2 request URLs through the existing loopback CDP session, and restore
-  every rule and the prior audit policy in `finally`.
+  every rule and the prior audit policy in `finally`. Keep the shipped Windows
+  WebView offline by routing its HTTP/S stack to a loopback-only proxy while
+  bypassing only local YoreBot origins; explicit links continue through the
+  system-browser opener. Do not mutate machine-wide WebView2 policy.
 - **Consequences:** The unchanged Chat and plan/apply/undo/deny rituals can
   fail on any observed non-loopback attempt without adding a product runtime
-  dependency. The proof remains manual, Windows-runner, unsigned-internal
-  evidence; it is not signed-release or uncoached-user evidence.
+  dependency. WebView-rendered remote content fails locally, while native
+  declared downloads and user-clicked external links keep their existing
+  paths. The proof remains manual, Windows-runner, unsigned-internal evidence;
+  it is not signed-release or uncoached-user evidence. WebView browser switches
+  are version-sensitive, so the runtime audit remains required when WebView2 or
+  Tauri changes.
 - **Owner:** team.
 - **Links:** [Issue #23](https://github.com/emv-dev/YoreBot/issues/23),
   [`scripts/windows-network-audit.ps1`](scripts/windows-network-audit.ps1),
   [`scripts/test-windows-first-use.ps1`](scripts/test-windows-first-use.ps1),
-  [`scripts/test-windows-pinned-model.ps1`](scripts/test-windows-pinned-model.ps1).
+  [`scripts/test-windows-pinned-model.ps1`](scripts/test-windows-pinned-model.ps1),
+  [WebView2 browser arguments](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/webview-features-flags).
 
 ### 2026-08-30 — Reuse one scoped helper for Windows install cleanup
 - **Context:** A fresh installed Chat turn left its exact data-root

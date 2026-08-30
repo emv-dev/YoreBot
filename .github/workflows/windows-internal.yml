@@ -304,10 +304,12 @@ jobs:
           if ($config.app.windows.Count -ne 1) {
             throw 'Expected exactly one configured Windows webview'
           }
-          $config.app.windows[0] | Add-Member `
-            -NotePropertyName 'additionalBrowserArgs' `
-            -NotePropertyValue '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229' `
-            -Force
+          $shippingBrowserArgs = [string]$config.app.windows[0].additionalBrowserArgs
+          if ([string]::IsNullOrWhiteSpace($shippingBrowserArgs)) {
+            throw 'Shipping Windows webview has no offline network boundary'
+          }
+          $testOnlyBrowserArgs = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229'
+          $config.app.windows[0].additionalBrowserArgs = "$shippingBrowserArgs $testOnlyBrowserArgs"
           $configPath = Join-Path $env:RUNNER_TEMP 'tauri.first-use-test-only.windows.conf.json'
           $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 

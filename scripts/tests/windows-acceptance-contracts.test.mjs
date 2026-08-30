@@ -590,6 +590,7 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   const chatInput = read('web-app/src/containers/ChatInput.tsx')
   const threadRoute = read('web-app/src/routes/threads/$threadId.tsx')
   const messages = read('web-app/src/containers/MessageItem.tsx')
+  const accessDialog = read('web-app/src/containers/dialogs/YoreBotAccessDialog.tsx')
 
   for (const value of [
     'http://127.0.0.1:',
@@ -691,15 +692,34 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(messages, /aria-label=\{\s*message\.role === 'assistant'/)
   assert.match(script, /\$cdpPort = 9229/)
   assert.match(script, /Assert-LoopbackPortAvailable -Port \$cdpPort/)
+  assert.match(script, /WebView2 selected target: \$lastTargetDiagnostic/)
+  assert.match(
+    script,
+    /-DiagnosticContext "parent=\$parentId command_line=\$commandLine"/
+  )
+  assert.match(
+    read('scripts/windows-network-audit.ps1'),
+    /pid=\$\(\$Process\.Id\) path=\$canonicalPath destinations=\[\$destinations\]\$contextSuffix/
+  )
   assert.doesNotMatch(script, /WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS/)
-  for (const source of [
-    baseConfig,
-    windowsConfig,
-    releaseWorkflow,
-    signedWorkflow,
+  const configuredWindows = JSON.parse(windowsConfig)
+  assert.equal(configuredWindows.app.windows.length, 1)
+  const shippingBrowserArgs = configuredWindows.app.windows[0].additionalBrowserArgs
+  for (const value of [
+    '--proxy-server=http://127.0.0.1:9',
+    '--proxy-bypass-list=localhost,127.0.0.1,[::1],tauri.localhost,asset.localhost',
   ]) {
-    assert.doesNotMatch(source, /additionalBrowserArgs|remote-debugging-port/)
+    assert.ok(shippingBrowserArgs.includes(value), `shipping WebView omits ${value}`)
   }
+  for (const source of [baseConfig, windowsConfig, releaseWorkflow, signedWorkflow]) {
+    assert.doesNotMatch(source, /remote-debugging-(?:address|port)/)
+  }
+  assert.doesNotMatch(
+    shippingBrowserArgs,
+    /disable-web-security|ignore-certificate-errors|no-sandbox/i
+  )
+  assert.match(accessDialog, /import \{ openUrl \} from '@tauri-apps\/plugin-opener'/)
+  assert.match(accessDialog, /await openUrl\(url\)/)
   const marker = script.indexOf("marker: reply.includes('YOREBOT_CHAT_OK')")
   const completed = script.indexOf('$chatCompleted = $true')
   const stopApp = script.indexOf('Stop-ExactProcesses -Path $appPath', marker)
@@ -754,7 +774,11 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   ]) {
     assert.ok(acceptanceBuild.includes(value), `acceptance build omits ${value}`)
   }
-  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 1)
+  assert.match(
+    acceptanceBuild,
+    /\$shippingBrowserArgs = \[string\]\$config\.app\.windows\[0\]\.additionalBrowserArgs[\s\S]*\$config\.app\.windows\[0\]\.additionalBrowserArgs = "\$shippingBrowserArgs \$testOnlyBrowserArgs"/
+  )
+  assert.equal((workflow.match(/additionalBrowserArgs/g) ?? []).length, 2)
   assert.match(
     acceptanceBuild,
     /if: github\.event_name == 'workflow_dispatch' && inputs\.hardware_profile == 'ordinary-16gb'/

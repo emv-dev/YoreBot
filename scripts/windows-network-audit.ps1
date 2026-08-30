@@ -204,7 +204,8 @@ function Watch-YoreBotNetworkProcess {
         [Parameter(Mandatory)] $State,
         [Parameter(Mandatory)][System.Diagnostics.Process] $Process,
         [Parameter(Mandatory)][string] $Path,
-        [Parameter(Mandatory)][string] $Role
+        [Parameter(Mandatory)][string] $Role,
+        [string] $DiagnosticContext = ''
     )
 
     $Process.Refresh()
@@ -227,7 +228,16 @@ function Watch-YoreBotNetworkProcess {
         $destinations = @($existing | ForEach-Object {
             "$($_.RemoteAddress):$($_.RemotePort)"
         }) -join ','
-        throw "Network-audited $Role already has a non-loopback connection: $destinations"
+        $boundedContext = [regex]::Replace($DiagnosticContext, '[\x00-\x1f\x7f]', '?')
+        if ($boundedContext.Length -gt 1200) {
+            $boundedContext = $boundedContext.Substring(0, 1200)
+        }
+        $contextSuffix = if ([string]::IsNullOrWhiteSpace($boundedContext)) {
+            ''
+        } else {
+            " context=[$boundedContext]"
+        }
+        throw "Network-audited $Role already has a non-loopback connection: pid=$($Process.Id) path=$canonicalPath destinations=[$destinations]$contextSuffix"
     }
     Add-YoreBotWatchedProcessRecord `
         -State $State `
