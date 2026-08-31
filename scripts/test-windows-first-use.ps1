@@ -57,11 +57,19 @@ function Assert-DownloadsPlanProposal {
         $semantic,
         '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report_pdf\b(?:\s+file)?\s+\b(?:to|into|under)\b\s+(?:the\s+)?\bDocuments\b(?:\s+folder)?(?:/quarterly-report_pdf)?'
     )
+    $movesSourceByExactArrow = [regex]::IsMatch(
+        $semantic,
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report_pdf\b\s*(?:→|->)\s*\bDocuments/quarterly-report_pdf\b'
+    )
     $createsDocumentsThenMovesThere = [regex]::IsMatch(
         $semantic,
         '(?i)\b(?:create|make)\b[^.;!?]{0,50}\bDocuments\b(?:\s+folder)?[^.;!?]{0,80}\bmove(?:s|d|ing)?\b[^.;!?]{0,50}\bquarterly-report_pdf\b(?:\s+file)?\s+there\b'
     )
-    if (-not ($movesSourceToDocuments -or $createsDocumentsThenMovesThere)) {
+    if (-not (
+        $movesSourceToDocuments -or
+        $movesSourceByExactArrow -or
+        $createsDocumentsThenMovesThere
+    )) {
         throw "Downloads plan did not propose moving quarterly-report.pdf into Documents: $Value"
     }
     if (-not [regex]::IsMatch(
@@ -82,7 +90,8 @@ if ($ValidateDownloadsPlanContractOnly) {
     foreach ($accepted in @(
         "I found 2 files. Proposed plan: Create 'Documents' folder and move quarterly-report.pdf there. Leave mystery.download in place.",
         'Move quarterly-report.pdf into Documents. Keep mystery.download untouched.',
-        'Move quarterly-report.pdf into Documents. Do not move mystery.download; keep mystery.download untouched.'
+        'Move quarterly-report.pdf into Documents. Do not move mystery.download; keep mystery.download untouched.',
+        'Move quarterly-report.pdf → Documents/quarterly-report.pdf. Keep mystery.download untouched.'
     )) {
         Assert-DownloadsPlanProposal -Value $accepted
     }

@@ -704,6 +704,7 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     'Move quarterly-report.pdf to Trash and create Documents',
     'Create Documents for later, then move quarterly-report.pdf to Trash',
     'Do not move mystery.download; keep mystery.download untouched',
+    'Move quarterly-report.pdf → Documents/quarterly-report.pdf',
     'The Downloads plan mutated disk before acceptance or approval',
     'Create folder: $documentsPath',
     'Move: $reportPath → $movedReportPath',
