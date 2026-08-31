@@ -230,6 +230,18 @@ fn undo_summary_accepts_exact_paths_when_actions_prove_direction() {
     );
 }
 
+#[test]
+fn reply_path_matching_rejects_a_parent_path_suffix() {
+    assert!(!reply_contains_exact_path(
+        "Documents/quarterly-report.pdf, mystery.download",
+        "quarterly-report.pdf",
+    ));
+    assert!(reply_contains_exact_path(
+        "Documents/quarterly-report.pdf, quarterly-report.pdf, mystery.download",
+        "quarterly-report.pdf",
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires pinned upstream b10431 and an exact YoreBot Qwen Q4_K_M pin"]
 async fn downloads_agent_acceptance() {
@@ -768,8 +780,23 @@ fn assert_reply_mentions(events: &[AgentEvent], expected_paths: &[&str]) {
         })
         .unwrap_or_else(|| panic!("missing assistant reply: {events:#?}"));
     for path in expected_paths {
-        assert!(reply.contains(path), "reply omits {path:?}: {reply:?}");
+        assert!(
+            reply_contains_exact_path(&reply, path),
+            "reply omits exact path {path:?}: {reply:?}"
+        );
     }
+}
+
+fn reply_contains_exact_path(reply: &str, path: &str) -> bool {
+    reply.match_indices(path).any(|(start, _)| {
+        let before = reply[..start].chars().next_back();
+        let after = reply[start + path.len()..].chars().next();
+        !before.is_some_and(is_path_token_char) && !after.is_some_and(is_path_token_char)
+    })
+}
+
+fn is_path_token_char(value: char) -> bool {
+    value.is_ascii_alphanumeric() || matches!(value, '/' | '\\' | '_' | '-' | '.' | ':')
 }
 
 fn assert_reply_mentions_any(events: &[AgentEvent], expected_terms: &[&str]) {
