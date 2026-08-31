@@ -309,6 +309,24 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-30 — Make Agent tool-call sampling deterministic
+- **Context:** The pinned Qwen 9B model repeatedly emitted valid but different
+  tool paths or terminal replies across the same grammar-constrained Downloads
+  ritual. The prior sampling and repetition penalties preserved unnecessary
+  variation in Agent control output.
+- **Decision:** For Agent tool-call completions only, select the single
+  highest-probability token (`temperature=0`, `top_k=1`, `top_p=1`) and disable
+  repetition bias (`repeat_penalty=1`, `repeat_last_n=0`). Apply the same
+  profile to initial and repair requests; keep Chat sampling unchanged.
+- **Consequences:** The grammar and runtime validators remain the safety
+  boundary, while repeated Agent runs no longer sample alternative valid tool
+  arguments. Prompt caching remains enabled, so this is a path-compliance
+  improvement rather than a bitwise reproducibility claim.
+- **Owner:** team.
+- **Links:** [Issue #27](https://github.com/emv-dev/YoreBot/issues/27),
+  [`src-tauri/src/core/agent/llm_client.rs`](src-tauri/src/core/agent/llm_client.rs),
+  [`src-tauri/src/core/agent/runner_tests.rs`](src-tauri/src/core/agent/runner_tests.rs).
+
 ### 2026-08-30 — Connect Downloads before starting the advertised task
 - **Context:** The consumer “Organize my Downloads” suggestion selected a
   prompt and skill but no folder. Starting it could therefore use YoreBot's
