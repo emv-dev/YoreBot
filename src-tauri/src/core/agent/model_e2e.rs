@@ -215,13 +215,19 @@ fn live_acceptance_restricts_models_to_exact_product_pins() {
 }
 
 #[test]
-fn undo_summary_accepts_current_paths_and_restoration_semantics() {
+fn undo_summary_accepts_exact_paths_when_actions_prove_direction() {
     let events = [AgentEvent::AssistantReply {
-        text: "Moved quarterly-report.pdf back to root, mystery.download untouched".into(),
+        text: "Documents/quarterly-report.pdf, quarterly-report.pdf, mystery.download".into(),
     }];
 
-    assert_reply_mentions(&events, &["quarterly-report.pdf", "mystery.download"]);
-    assert_reply_mentions_any(&events, &["back", "restored", "root"]);
+    assert_reply_mentions(
+        &events,
+        &[
+            "Documents/quarterly-report.pdf",
+            "quarterly-report.pdf",
+            "mystery.download",
+        ],
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -356,10 +362,16 @@ async fn downloads_agent_acceptance() {
         file("quarterly-report.pdf", b"REPORT_SENTINEL_481"),
     ]);
     assert_snapshot(&harness.downloads, &undone);
-    // Tool, approval, and snapshot assertions above prove the exact historical
-    // source. The user-facing summary must accurately describe current state.
-    assert_reply_mentions(&undo, &["quarterly-report.pdf", "mystery.download"]);
-    assert_reply_mentions_any(&undo, &["back", "restored", "root"]);
+    // Tool, approval, status, and snapshot assertions above prove direction.
+    // The reply must identify the exact source, restored path, and untouched file.
+    assert_reply_mentions(
+        &undo,
+        &[
+            "Documents/quarterly-report.pdf",
+            "quarterly-report.pdf",
+            "mystery.download",
+        ],
+    );
 
     run_denied_scenario(&mut harness).await;
 }
