@@ -318,7 +318,7 @@ Append-only. Newest at top. Each entry follows this shape:
   primary root before filling the suggestion. If that folder cannot be
   resolved, show a plain failure and do not select or start the task. Extend
   the existing manual installed-app CDP/WFP ritual to click the real
-  suggestion and prove plan-only, visible Allow once approvals, exact apply,
+  suggestion and prove plan-only, visible Approve once decisions, exact apply,
   undo, denial without disk changes, and scoped fixture restoration.
 - **Consequences:** The advertised entry point no longer silently acts in an
   internal workspace. Other Agent entry points retain their existing workspace

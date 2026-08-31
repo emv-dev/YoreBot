@@ -672,6 +672,7 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
   )
   assert.match(home, /toast\.error\(t\('chat:agentTasks\.organizeDownloads\.unavailable'\)\)[\s\S]*?return/)
   assert.match(locale, /"unavailable":\s*"YoreBot couldn't open your Downloads folder\. Nothing was changed\."/)
+  assert.match(locale, /"approveOnce":\s*"Approve once"/)
   assert.match(messages, /aria-label=\{[\s\S]*?'YoreBot reply text'/)
   assert.match(messages, /aria-label="Agent run error"/)
 
@@ -692,9 +693,9 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     'The Downloads plan mutated disk before acceptance or approval',
     'Create folder: $documentsPath',
     'Move: $reportPath → $movedReportPath',
-    "-ApprovalDecisions @('Allow once', 'Allow once')",
+    "-ApprovalDecisions @('Approve once', 'Approve once')",
     'Move: $movedReportPath → $reportPath',
-    "-ApprovalDecisions @('Allow once')",
+    "-ApprovalDecisions @('Approve once')",
     "-ApprovalDecisions @('Deny')",
     'Deny changed the Downloads disk state',
     'Remove-DownloadsFixture -Root $downloadsRoot',

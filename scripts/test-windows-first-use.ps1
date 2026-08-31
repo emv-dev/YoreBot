@@ -863,7 +863,7 @@ function Invoke-YoreBotAgentTurn {
         throw 'Every expected approval preview needs one decision'
     }
     foreach ($decision in $ApprovalDecisions) {
-        if ($decision -notin @('Allow once', 'Deny')) {
+        if ($decision -notin @('Approve once', 'Deny')) {
             throw "Unsupported UI approval decision: $decision"
         }
     }
@@ -954,7 +954,7 @@ JSON.stringify((() => {
       Boolean(document.querySelector('[aria-label="Chat generation error"]')?.innerText.trim()),
     approval: Boolean(dialog),
     preview: dialog?.querySelector('pre')?.innerText.trim() ?? '',
-    allowOnce: buttons.some((button) => button.innerText.trim() === 'Allow once' && !button.disabled),
+    approveOnce: buttons.some((button) => button.innerText.trim() === 'Approve once' && !button.disabled),
     deny: buttons.some((button) => button.innerText.trim() === 'Deny' && !button.disabled),
   };
 })())
@@ -975,7 +975,7 @@ JSON.stringify((() => {
                 throw "Agent approval preview changed: expected=[$expectedPreview] actual=[$($state.preview)]"
             }
             $decision = $ApprovalDecisions[$approvalIndex]
-            if (($decision -eq 'Allow once' -and -not $state.allowOnce) -or
+            if (($decision -eq 'Approve once' -and -not $state.approveOnce) -or
                 ($decision -eq 'Deny' -and -not $state.deny)) {
                 throw "Agent approval did not expose the required visible decision: $decision"
             }
@@ -1576,7 +1576,7 @@ JSON.stringify((() => {
             "Create folder: $documentsPath",
             "Move: $reportPath → $movedReportPath"
         ) `
-        -ApprovalDecisions @('Allow once', 'Allow once')
+        -ApprovalDecisions @('Approve once', 'Approve once')
     Assert-ExactDownloadsPaths -Root $downloadsRoot -Expected @(
         'Documents',
         'Documents/quarterly-report.pdf',
@@ -1603,7 +1603,7 @@ JSON.stringify((() => {
         -ExpectedApprovalPreviews @(
             "Move: $movedReportPath → $reportPath"
         ) `
-        -ApprovalDecisions @('Allow once')
+        -ApprovalDecisions @('Approve once')
     Assert-ExactDownloadsPaths -Root $downloadsRoot -Expected @(
         'Documents',
         'mystery.download',
