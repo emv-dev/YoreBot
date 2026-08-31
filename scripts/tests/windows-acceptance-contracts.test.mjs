@@ -1261,6 +1261,8 @@ test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-
   ]) {
     assert.ok(preflightScript.includes(unsafeTag), `missing rejected tag fixture: ${unsafeTag}`)
   }
+  assert.match(preflightScript, /\$gumroadHost = \$uri\.DnsSafeHost\.ToLowerInvariant\(\)/)
+  assert.doesNotMatch(preflightScript, /^\s*\$host\s*=/mi)
   assert.match(
     internal,
     /validate-windows-draft-release\.ps1 -ValidateContractOnly/

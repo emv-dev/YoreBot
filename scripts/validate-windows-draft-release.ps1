@@ -54,8 +54,8 @@ function Get-CheckedGumroadUri {
     if ([string]::IsNullOrEmpty($authority) -or $authority.Contains('@') -or $authority -match ':\d+$') {
         throw 'Gumroad URL must not contain credentials or an explicit port'
     }
-    $host = $uri.DnsSafeHost.ToLowerInvariant()
-    if ($host -cne 'gumroad.com' -and -not $host.EndsWith('.gumroad.com', [System.StringComparison]::Ordinal)) {
+    $gumroadHost = $uri.DnsSafeHost.ToLowerInvariant()
+    if ($gumroadHost -cne 'gumroad.com' -and -not $gumroadHost.EndsWith('.gumroad.com', [System.StringComparison]::Ordinal)) {
         throw 'Gumroad URL must use an official Gumroad host'
     }
     return $uri
