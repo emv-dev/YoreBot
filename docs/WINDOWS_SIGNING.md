@@ -81,8 +81,11 @@ SHA-256 digests, and each exact
 `https://github.com/emv-dev/YoreBot/releases/download/...` URL. The draft title
 and description are publication-ready; a hidden run marker exists only to
 prove rollback ownership. If staging fails, cleanup re-reads that exact marker,
-target commit, release id, and tag target before deleting anything. It never
-deletes pre-existing or ambiguous state.
+target commit, release id, and tag target before deleting anything. The tag is
+considered run-owned only after its explicit create-ref call returns the exact
+HTTP 201/ref/SHA response; a lost or ambiguous response is retained for human
+inspection, never deleted. Cleanup never deletes pre-existing or ambiguous
+state.
 
 Only the main app executable and NSIS installer are claimed as signed. Bundled
 helpers such as `jan-cli.exe`, `bun`, `uv`, `llama-server.exe`, and its DLLs are

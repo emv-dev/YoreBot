@@ -455,9 +455,31 @@ jobs:
           $draftMarker = "<!-- YOREBOT_DRAFT_OWNER run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT sha=$env:GITHUB_SHA -->"
           $releaseName = "YoreBot $appVersion for Windows"
           $releaseBody = "Private local Chat and a Downloads task that asks before changing files.`n`nVerify the installer with the attached SHA-256 checksum.`n`n$draftMarker"
-          $creationAttempted = $false
+          $tagCreationAttempted = $false
+          $tagCreatedByRun = $false
+          $releaseCreationAttempted = $false
           $recordedReleaseId = $null
           try {
+            $tagPayload = Join-Path $env:RUNNER_TEMP 'yorebot-draft-tag.json'
+            Write-JsonFile -Path $tagPayload -Value @{
+              ref = "refs/tags/$tag"
+              sha = $env:GITHUB_SHA
+            }
+            $tagCreationAttempted = $true
+            $createdTagRef = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest `
+                -Uri "$repositoryApi/git/refs" `
+                -Method POST `
+                -InFile $tagPayload `
+                -ContentType 'application/json') `
+              -ExpectedStatus 201
+            if ($createdTagRef.ref -cne "refs/tags/$tag" -or
+                $createdTagRef.object.type -cne 'commit' -or
+                $createdTagRef.object.sha -cne $env:GITHUB_SHA) {
+              throw 'Created tag ref did not match the exact workflow commit'
+            }
+            $tagCreatedByRun = $true
+
             $releasePayload = Join-Path $env:RUNNER_TEMP 'yorebot-draft-release.json'
             Write-JsonFile -Path $releasePayload -Value @{
               tag_name = $tag
@@ -468,7 +490,7 @@ jobs:
               prerelease = $false
               make_latest = 'false'
             }
-            $creationAttempted = $true
+            $releaseCreationAttempted = $true
             $release = Convert-GitHubJson `
               -Response (Invoke-GitHubRequest `
                 -Uri "$repositoryApi/releases" `
@@ -493,7 +515,9 @@ jobs:
             $tagRef = Convert-GitHubJson `
               -Response (Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag") `
               -ExpectedStatus 200
-            if ($tagRef.ref -cne "refs/tags/$tag" -or $tagRef.object.sha -cne $env:GITHUB_SHA) {
+            if ($tagRef.ref -cne "refs/tags/$tag" -or
+                $tagRef.object.type -cne 'commit' -or
+                $tagRef.object.sha -cne $env:GITHUB_SHA) {
               throw 'Created tag does not target the exact workflow commit'
             }
             $uploadBase = (& ./scripts/validate-windows-draft-release.ps1 `
@@ -570,7 +594,7 @@ jobs:
           } catch {
             $failure = $_
             $cleanupFailures = [System.Collections.Generic.List[string]]::new()
-            if ($creationAttempted) {
+            if ($tagCreationAttempted -or $releaseCreationAttempted) {
               $releaseProbe = $null
               $tagProbe = $null
               try {
@@ -583,9 +607,9 @@ jobs:
               } catch {
                 $cleanupFailures.Add('tag ownership probe transport')
               }
-              if ($null -ne $releaseProbe -and
-                  $null -ne $tagProbe -and
-                  [int]$releaseProbe.StatusCode -eq 200) {
+
+              $releaseStateSafeForTagCleanup = $false
+              if ($null -ne $releaseProbe -and [int]$releaseProbe.StatusCode -eq 200) {
                 try {
                   $ownedRelease = Convert-GitHubJson -Response $releaseProbe -ExpectedStatus 200
                   if ([long]$ownedRelease.id -le 0 -or
@@ -597,41 +621,51 @@ jobs:
                       $ownedRelease.body -cne $releaseBody) {
                     throw 'Exact draft ownership marker or target did not match'
                   }
-                  $ownedTag = $null
-                  if ([int]$tagProbe.StatusCode -eq 200) {
-                    $ownedTag = Convert-GitHubJson -Response $tagProbe -ExpectedStatus 200
-                    if ($ownedTag.ref -cne "refs/tags/$tag" -or $ownedTag.object.sha -cne $env:GITHUB_SHA) {
-                      throw 'Exact created tag target did not match'
-                    }
-                  } elseif ([int]$tagProbe.StatusCode -ne 404) {
-                    throw "Unable to inspect exact tag during cleanup (HTTP $([int]$tagProbe.StatusCode))"
-                  }
-
                   $deleteRelease = Invoke-GitHubRequest `
                     -Uri "$repositoryApi/releases/$([long]$ownedRelease.id)" `
                     -Method DELETE
                   if ([int]$deleteRelease.StatusCode -ne 204) {
                     throw "Exact draft release cleanup returned HTTP $([int]$deleteRelease.StatusCode)"
                   }
-                  if ($null -ne $ownedTag) {
+                  $releaseStateSafeForTagCleanup = $true
+                } catch {
+                  $cleanupFailures.Add('exact marker-owned draft release')
+                }
+              } elseif ($null -ne $releaseProbe -and [int]$releaseProbe.StatusCode -eq 404) {
+                $releaseStateSafeForTagCleanup = $true
+              } elseif ($null -ne $releaseProbe) {
+                $cleanupFailures.Add("release ownership probe HTTP $([int]$releaseProbe.StatusCode)")
+              }
+
+              if ($null -ne $tagProbe -and
+                  $tagCreatedByRun -and
+                  $releaseStateSafeForTagCleanup) {
+                if ([int]$tagProbe.StatusCode -eq 200) {
+                  try {
+                    $ownedTag = Convert-GitHubJson -Response $tagProbe -ExpectedStatus 200
+                    if ($ownedTag.ref -cne "refs/tags/$tag" -or
+                        $ownedTag.object.type -cne 'commit' -or
+                        $ownedTag.object.sha -cne $env:GITHUB_SHA) {
+                      throw 'Exact created tag target did not match'
+                    }
                     $deleteTag = Invoke-GitHubRequest `
                       -Uri "$repositoryApi/git/refs/tags/$encodedTag" `
                       -Method DELETE
                     if ([int]$deleteTag.StatusCode -ne 204) {
                       throw "Exact created tag cleanup returned HTTP $([int]$deleteTag.StatusCode)"
                     }
+                  } catch {
+                    $cleanupFailures.Add('exact run-owned tag')
                   }
-                } catch {
-                  $cleanupFailures.Add('exact marker-owned draft release and tag')
+                } elseif ([int]$tagProbe.StatusCode -ne 404) {
+                  $cleanupFailures.Add("tag ownership probe HTTP $([int]$tagProbe.StatusCode)")
                 }
-              } elseif ($null -ne $releaseProbe -and
-                        $null -ne $tagProbe -and
-                        [int]$releaseProbe.StatusCode -eq 404) {
-                if ([int]$tagProbe.StatusCode -ne 404) {
-                  $cleanupFailures.Add('unowned tag remained without a marker-owned draft')
-                }
-              } elseif ($null -ne $releaseProbe -and $null -ne $tagProbe) {
-                $cleanupFailures.Add("release ownership probe HTTP $([int]$releaseProbe.StatusCode)")
+              } elseif ($null -ne $tagProbe -and $tagCreatedByRun) {
+                $cleanupFailures.Add('run-owned tag retained because release state was ambiguous')
+              } elseif ($null -ne $tagProbe -and
+                        $tagCreationAttempted -and
+                        [int]$tagProbe.StatusCode -ne 404) {
+                $cleanupFailures.Add('tag creation response did not prove ownership')
               }
             }
             if ($cleanupFailures.Count -gt 0) {

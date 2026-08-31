@@ -321,7 +321,9 @@ Append-only. Newest at top. Each entry follows this shape:
   releases. Keep checkout credentials unpersisted, pass `GH_TOKEN` only to the
   final shell step, and verify GitHub's server-side asset digests. On failure,
   clean up only a draft whose hidden run marker and exact commit/tag targets
-  prove it was created by that run.
+  prove it was created by that run. Treat the tag as run-owned only after the
+  explicit create-ref request returns the exact HTTP 201/ref/SHA response;
+  ambiguous tag creation is never deleted automatically.
 - **Consequences:** A configured human dispatch can produce a reviewable draft
   without an Actions artifact or an unsigned staging path. The same job needs
   repository write permission for the entire job because the verified installer

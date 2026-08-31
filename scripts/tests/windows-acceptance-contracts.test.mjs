@@ -1196,10 +1196,18 @@ test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-
     draftBlock.match(/-Uri "\$repositoryApi\/releases"[\s\S]{0,160}-Method POST/g)?.length,
     1
   )
-  assert.doesNotMatch(
-    draftBlock,
-    /-Uri "\$repositoryApi\/git\/refs"[\s\S]{0,160}-Method POST/
+  assert.equal(
+    draftBlock.match(/-Uri "\$repositoryApi\/git\/refs"[\s\S]{0,160}-Method POST/g)?.length,
+    1
   )
+  const tagCreate = draftBlock.indexOf('-Uri "$repositoryApi/git/refs"')
+  const tagOwned = draftBlock.indexOf('$tagCreatedByRun = $true')
+  const releaseCreate = draftBlock.indexOf('-Uri "$repositoryApi/releases"')
+  const tagDelete = draftBlock.indexOf('-Uri "$repositoryApi/git/refs/tags/$encodedTag"')
+  assert.ok(tagCreate >= 0 && tagCreate < tagOwned && tagOwned < releaseCreate && releaseCreate < tagDelete)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /-ExpectedStatus 201/)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /\$createdTagRef\.object\.type -cne 'commit'/)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /\$createdTagRef\.object\.sha -cne \$env:GITHUB_SHA/)
   assert.match(draftBlock, /target_commitish = \$env:GITHUB_SHA/)
   assert.match(draftBlock, /draft = \$true/)
   assert.match(draftBlock, /\$releaseName = "YoreBot \$appVersion for Windows"/)
@@ -1216,7 +1224,8 @@ test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-
   assert.match(draftBlock, /Get-AuthenticodeSignature/)
   assert.match(draftBlock, /TimeStamperCertificate/)
   assert.match(draftBlock, /\$createdReleaseId/)
-  assert.match(draftBlock, /\$creationAttempted = \$true/)
+  assert.match(draftBlock, /\$tagCreationAttempted = \$true/)
+  assert.match(draftBlock, /\$releaseCreationAttempted = \$true/)
   assert.match(draftBlock, /\$recordedReleaseId = \$createdReleaseId/)
   assert.match(draftBlock, /\$release\.upload_url\)/)
   assert.doesNotMatch(draftBlock, /\$release\.upload_url\s*\|\s*Out-String/)
@@ -1233,10 +1242,12 @@ test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-
   assert.match(draftBlock, /\$ownedRelease\.id -ne \$recordedReleaseId/)
   assert.match(draftBlock, /\$ownedRelease\.target_commitish -cne \$env:GITHUB_SHA/)
   assert.match(draftBlock, /\$ownedTag\.object\.sha -cne \$env:GITHUB_SHA/)
+  assert.match(draftBlock, /\$tagCreatedByRun -and\s+\$releaseStateSafeForTagCleanup/)
+  assert.match(draftBlock, /tag creation response did not prove ownership/)
   assert.match(draftBlock, /-Uri "\$repositoryApi\/releases\/\$\(\[long\]\$ownedRelease\.id\)"/)
   assert.match(draftBlock, /-Uri "\$repositoryApi\/git\/refs\/tags\/\$encodedTag"/)
   assert.match(draftBlock, /Draft release failed and cleanup was incomplete/)
-  assert.doesNotMatch(draftBlock, /\$createdTag|--latest|--prerelease|gh release|gh api/)
+  assert.doesNotMatch(draftBlock, /\$createdTag\s*=|--latest|--prerelease|gh release|gh api/)
 
   for (const value of [
     '[switch] $ValidateContractOnly',
