@@ -1219,6 +1219,14 @@ test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-
   assert.match(draftBlock, /Digest = "sha256:\$installerHash"/)
   assert.match(draftBlock, /Digest = "sha256:\$checksumHash"/)
   assert.match(draftBlock, /Dictionary\[string, object\].*StringComparer\]::Ordinal/s)
+  const assetsVerified = draftBlock.indexOf('if ($expectedAssets.Count -ne 0)')
+  const finalTagCheck = draftBlock.indexOf('$finalTagRef = Convert-GitHubJson')
+  const successOutput = draftBlock.indexOf('Write-Host "Unpublished signed Windows draft verified')
+  assert.ok(assetsVerified >= 0 && assetsVerified < finalTagCheck && finalTagCheck < successOutput)
+  assert.match(
+    draftBlock.slice(finalTagCheck, successOutput),
+    /\$finalTagRef\.ref -cne "refs\/tags\/\$tag"[\s\S]*\$finalTagRef\.object\.type -cne 'commit'[\s\S]*\$finalTagRef\.object\.sha -cne \$env:GITHUB_SHA/
+  )
   assert.match(draftBlock, /YOREBOT_RELEASE_BASE_URL/)
   assert.match(draftBlock, /Get-AuthenticodeSignature/)
   assert.match(draftBlock, /TimeStamperCertificate/)

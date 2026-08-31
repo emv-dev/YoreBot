@@ -587,6 +587,14 @@ jobs:
             if ($expectedAssets.Count -ne 0) {
               throw 'A required draft asset is missing'
             }
+            $finalTagRef = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag") `
+              -ExpectedStatus 200
+            if ($finalTagRef.ref -cne "refs/tags/$tag" -or
+                $finalTagRef.object.type -cne 'commit' -or
+                $finalTagRef.object.sha -cne $env:GITHUB_SHA) {
+              throw 'Draft tag changed during asset staging'
+            }
             Write-Host "Unpublished signed Windows draft verified: tag=$tag assets=2 sha256=$installerHash"
           } catch {
             $failure = $_
