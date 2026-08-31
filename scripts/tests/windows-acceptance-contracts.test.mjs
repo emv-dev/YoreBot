@@ -712,6 +712,7 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     'Documents/quarterly-report.pdf → quarterly-report.pdf.bak, quarterly-report.pdf, mystery.download',
     'Restored quarterly-report.pdf → Documents/quarterly-report.pdf',
     'Restored Documents/quarterly-report.pdf → quarterly-report.pdf.bak',
+    'Moved Documents/quarterly-report.pdf to quarterly-report.pdf.bak',
     'Documents/quarterly-report.pdf is not back at quarterly-report.pdf',
     'Did not move Documents/quarterly-report.pdf to quarterly-report.pdf',
     'The Downloads plan mutated disk before acceptance or approval',

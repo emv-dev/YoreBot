@@ -156,17 +156,17 @@ function Assert-DownloadsUndoSummary {
     }
     if ([regex]::IsMatch(
         $normalized,
-        '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)\s*(?!quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-]))'
+        '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)\s*quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-])'
+    )) { return }
+    if ([regex]::IsMatch(
+        $normalized,
+        '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)'
     )) {
         throw "Downloads undo summary used the wrong restored destination: $Value"
     }
     if ([regex]::IsMatch(
         $normalized,
-        '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)\s*quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-])'
-    )) { return }
-    if ([regex]::IsMatch(
-        $normalized,
-        '(?i)\b(?:move(?:s|d|ing)?|restore(?:s|d|ing)?)\b[^.;!?]{0,40}\bDocuments/quarterly-report\.pdf\b\s*(?:back\s+)?(?:to|into)\s+(?:the\s+)?(?:root\s+(?:as\s+)?)?\bquarterly-report\.pdf\b'
+        '(?i)\b(?:move(?:s|d|ing)?|restore(?:s|d|ing)?)\b[^.;!?]{0,40}\bDocuments/quarterly-report\.pdf\b\s*(?:back\s+)?(?:to|into)\s+(?:the\s+)?(?:root\s+(?:as\s+)?)?\bquarterly-report\.pdf(?![A-Za-z0-9/\\_.:-])'
     )) { return }
     throw "Downloads undo summary omitted the exact reverse-move relation: $Value"
 }
@@ -219,6 +219,7 @@ if ($ValidateDownloadsPlanContractOnly) {
         'Documents/quarterly-report.pdf → quarterly-report.pdf.bak, quarterly-report.pdf, mystery.download',
         'Restored quarterly-report.pdf → Documents/quarterly-report.pdf; Documents/quarterly-report.pdf, mystery.download',
         'Restored Documents/quarterly-report.pdf → quarterly-report.pdf.bak; quarterly-report.pdf, mystery.download',
+        'Moved Documents/quarterly-report.pdf to quarterly-report.pdf.bak; quarterly-report.pdf, mystery.download',
         'Documents/quarterly-report.pdf is not back at quarterly-report.pdf; mystery.download',
         'Did not move Documents/quarterly-report.pdf to quarterly-report.pdf; mystery.download'
     )) {
