@@ -240,6 +240,14 @@ fn reply_path_matching_rejects_a_parent_path_suffix() {
         "Documents/quarterly-report.pdf, quarterly-report.pdf, mystery.download",
         "quarterly-report.pdf",
     ));
+    assert!(reply_contains_exact_path(
+        "Moved quarterly-report.pdf to Documents/quarterly-report.pdf. Leave mystery.download untouched.",
+        "Documents/quarterly-report.pdf",
+    ));
+    assert!(!reply_contains_exact_path(
+        "Moved quarterly-report.pdf to Documents/quarterly-report.pdf.bak; mystery.download untouched.",
+        "Documents/quarterly-report.pdf",
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -790,9 +798,18 @@ fn assert_reply_mentions(events: &[AgentEvent], expected_paths: &[&str]) {
 fn reply_contains_exact_path(reply: &str, path: &str) -> bool {
     reply.match_indices(path).any(|(start, _)| {
         let before = reply[..start].chars().next_back();
-        let after = reply[start + path.len()..].chars().next();
-        !before.is_some_and(is_path_token_char) && !after.is_some_and(is_path_token_char)
+        let after = &reply[start + path.len()..];
+        !before.is_some_and(is_path_token_char) && is_exact_path_end(after)
     })
+}
+
+fn is_exact_path_end(remainder: &str) -> bool {
+    let mut chars = remainder.chars();
+    match chars.next() {
+        None => true,
+        Some('.') => chars.next().is_none_or(|next| !is_path_token_char(next)),
+        Some(value) => !is_path_token_char(value),
+    }
 }
 
 fn is_path_token_char(value: char) -> bool {
