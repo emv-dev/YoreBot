@@ -20,9 +20,26 @@ function Assert-DownloadsPlanProposal {
     param([Parameter(Mandatory)][string] $Value)
 
     $normalized = [regex]::Replace($Value.Replace('\', '/'), '\s+', ' ').Trim()
+    $negatesReportMove = [regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:not|never|don.t)\b.{0,30}\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report\.pdf\b'
+    ) -or [regex]::IsMatch(
+        $normalized,
+        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report\.pdf\b.{0,30}\b(?:not|never|nowhere)\b'
+    )
+    $negatesUntouchedFile = [regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:not|never|don.t)\b.{0,30}\b(?:leave|keep)\b.{0,60}\bmystery\.download\b'
+    ) -or [regex]::IsMatch(
+        $normalized,
+        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bmystery\.download\b|\bmove\s+it\s+too\b'
+    )
+    if ($negatesReportMove -or $negatesUntouchedFile) {
+        throw "Downloads plan contradicted the required proposal: $Value"
+    }
     $movesSourceToDocuments = [regex]::IsMatch(
         $normalized,
-        '(?i)\bmove(?:s|d|ing)?\b.{0,80}\bquarterly-report\.pdf\b.{0,80}\bDocuments(?:/quarterly-report\.pdf)?\b'
+        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report\.pdf\b.{0,30}\b(?:to|into|under)\b.{0,30}\bDocuments(?:/quarterly-report\.pdf)?\b'
     )
     $createsDocumentsThenMovesThere = [regex]::IsMatch(
         $normalized,
@@ -55,7 +72,10 @@ if ($ValidateDownloadsPlanContractOnly) {
     foreach ($rejected in @(
         'Move quarterly-report.pdf into Archives. Keep mystery.download untouched.',
         'Move quarterly-report.pdf into Documents. Review mystery.download later.',
-        'Keep mystery.download untouched. Decide where quarterly-report.pdf belongs later.'
+        'Keep mystery.download untouched. Decide where quarterly-report.pdf belongs later.',
+        'Do not move quarterly-report.pdf into Documents. Keep mystery.download untouched.',
+        'Move quarterly-report.pdf nowhere; Documents is not appropriate. Leave mystery.download in place.',
+        'Move quarterly-report.pdf into Documents. Do not keep mystery.download untouched; move it too.'
     )) {
         $failedClosed = $false
         try {
