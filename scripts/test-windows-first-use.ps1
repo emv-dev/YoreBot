@@ -22,17 +22,17 @@ function Assert-DownloadsPlanProposal {
     $normalized = [regex]::Replace($Value.Replace('\', '/'), '\s+', ' ').Trim()
     $negatesReportMove = [regex]::IsMatch(
         $normalized,
-        '(?i)\b(?:not|never|don.t)\b.{0,30}\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report\.pdf\b'
+        '(?i)\b(?:not|never|don.t)\b[^.;!?]{0,30}\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report\.pdf\b'
     ) -or [regex]::IsMatch(
         $normalized,
-        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report\.pdf\b.{0,30}\b(?:not|never|nowhere)\b'
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report\.pdf\b[^.;!?]{0,30}\b(?:not|never|nowhere|don.t)\b'
     )
     $negatesUntouchedFile = [regex]::IsMatch(
         $normalized,
-        '(?i)\b(?:not|never|don.t)\b.{0,30}\b(?:leave|keep)\b.{0,60}\bmystery\.download\b'
+        '(?i)\b(?:not|never|don.t)\b[^.;!?]{0,30}\b(?:leave|keep)\b[^.;!?]{0,60}\bmystery\.download\b'
     ) -or [regex]::IsMatch(
         $normalized,
-        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bmystery\.download\b|\bmove\s+it\s+too\b'
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bmystery\.download\b|\bmove\s+it\s+too\b'
     )
     if ($negatesReportMove -or $negatesUntouchedFile) {
         throw "Downloads plan contradicted the required proposal: $Value"
