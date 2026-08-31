@@ -483,7 +483,6 @@ jobs:
             $releasePayload = Join-Path $env:RUNNER_TEMP 'yorebot-draft-release.json'
             Write-JsonFile -Path $releasePayload -Value @{
               tag_name = $tag
-              target_commitish = $env:GITHUB_SHA
               name = $releaseName
               body = $releaseBody
               draft = $true
@@ -504,7 +503,6 @@ jobs:
             }
             $recordedReleaseId = $createdReleaseId
             if ($release.tag_name -cne $tag -or
-                $release.target_commitish -cne $env:GITHUB_SHA -or
                 $release.draft -ne $true -or
                 $release.prerelease -ne $false -or
                 $release.name -cne $releaseName -or
@@ -551,7 +549,6 @@ jobs:
             if ($verified.draft -ne $true -or
                 $verified.prerelease -ne $false -or
                 $verified.tag_name -cne $tag -or
-                $verified.target_commitish -cne $env:GITHUB_SHA -or
                 $null -ne $verified.published_at -or
                 $verified.name -cne $releaseName -or
                 $verified.body -cne $releaseBody) {
@@ -616,7 +613,6 @@ jobs:
                       ($null -ne $recordedReleaseId -and [long]$ownedRelease.id -ne $recordedReleaseId) -or
                       $ownedRelease.draft -ne $true -or
                       $ownedRelease.tag_name -cne $tag -or
-                      $ownedRelease.target_commitish -cne $env:GITHUB_SHA -or
                       $ownedRelease.name -cne $releaseName -or
                       $ownedRelease.body -cne $releaseBody) {
                     throw 'Exact draft ownership marker or target did not match'

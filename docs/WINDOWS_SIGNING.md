@@ -76,8 +76,8 @@ at the workflow commit and one unpublished draft containing exactly:
 - `YoreBot_2.0.0_x64-setup.exe`;
 - `YoreBot_2.0.0_x64-setup.exe.sha256`.
 
-It verifies draft state, target commit, asset names, sizes, server-reported
-SHA-256 digests, and each exact
+It verifies draft state, the exact lightweight tag ref's commit SHA, asset
+names, sizes, server-reported SHA-256 digests, and each exact
 `https://github.com/emv-dev/YoreBot/releases/download/...` URL. The draft title
 and description are publication-ready; a hidden run marker exists only to
 prove rollback ownership. If staging fails, cleanup re-reads that exact marker,
