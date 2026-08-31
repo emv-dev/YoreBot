@@ -142,14 +142,31 @@ function Assert-DownloadsUndoSummary {
         'mystery.download'
     ) -Description 'Downloads undo summary'
     $normalized = [regex]::Replace($Value.Replace('\', '/'), '\s+', ' ').Trim()
-    if ([regex]::IsMatch($normalized, '(?i)\b(?:back|restored|root)\b')) { return }
+    if ([regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:not|never|don.t|didn.t)\b[^.;!?]{0,24}\b(?:move(?:s|d|ing)?|restore(?:s|d|ing)?)\b'
+    )) {
+        throw "Downloads undo summary negated the reverse move: $Value"
+    }
+    if ([regex]::IsMatch(
+        $normalized,
+        '(?i)(?<![A-Za-z0-9/\\_.:-])quarterly-report\.pdf\s*(?:→|->)\s*Documents/quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-])'
+    )) {
+        throw "Downloads undo summary reversed the required direction: $Value"
+    }
+    if ([regex]::IsMatch(
+        $normalized,
+        '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)\s*(?!quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-]))'
+    )) {
+        throw "Downloads undo summary used the wrong restored destination: $Value"
+    }
     if ([regex]::IsMatch(
         $normalized,
         '(?i)(?<![A-Za-z0-9/\\_.:-])Documents/quarterly-report\.pdf\s*(?:→|->)\s*quarterly-report\.pdf(?![A-Za-z0-9/\\_.:-])'
     )) { return }
     if ([regex]::IsMatch(
         $normalized,
-        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,40}\bDocuments/quarterly-report\.pdf\b\s*(?:to|into)\s*\bquarterly-report\.pdf\b'
+        '(?i)\b(?:move(?:s|d|ing)?|restore(?:s|d|ing)?)\b[^.;!?]{0,40}\bDocuments/quarterly-report\.pdf\b\s*(?:back\s+)?(?:to|into)\s+(?:the\s+)?(?:root\s+(?:as\s+)?)?\bquarterly-report\.pdf\b'
     )) { return }
     throw "Downloads undo summary omitted the exact reverse-move relation: $Value"
 }
@@ -190,7 +207,8 @@ if ($ValidateDownloadsPlanContractOnly) {
     foreach ($acceptedUndo in @(
         'Moved Documents/quarterly-report.pdf back to root as quarterly-report.pdf; mystery.download untouched.',
         'Documents/quarterly-report.pdf → quarterly-report.pdf, mystery.download',
-        'Moved Documents/quarterly-report.pdf to quarterly-report.pdf; mystery.download unchanged.'
+        'Moved Documents/quarterly-report.pdf to quarterly-report.pdf; mystery.download unchanged.',
+        'Restored Documents/quarterly-report.pdf to quarterly-report.pdf; mystery.download unchanged.'
     )) {
         Assert-DownloadsUndoSummary -Value $acceptedUndo
     }
@@ -198,7 +216,11 @@ if ($ValidateDownloadsPlanContractOnly) {
         'Documents/quarterly-report.pdf, mystery.download',
         'Documents/quarterly-report.pdf and quarterly-report.pdf, mystery.download',
         'quarterly-report.pdf → Documents/quarterly-report.pdf, mystery.download',
-        'Documents/quarterly-report.pdf → quarterly-report.pdf.bak, quarterly-report.pdf, mystery.download'
+        'Documents/quarterly-report.pdf → quarterly-report.pdf.bak, quarterly-report.pdf, mystery.download',
+        'Restored quarterly-report.pdf → Documents/quarterly-report.pdf; Documents/quarterly-report.pdf, mystery.download',
+        'Restored Documents/quarterly-report.pdf → quarterly-report.pdf.bak; quarterly-report.pdf, mystery.download',
+        'Documents/quarterly-report.pdf is not back at quarterly-report.pdf; mystery.download',
+        'Did not move Documents/quarterly-report.pdf to quarterly-report.pdf; mystery.download'
     )) {
         $failedClosed = $false
         try {
