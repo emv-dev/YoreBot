@@ -40,27 +40,33 @@ function Assert-DownloadsPlanProposal {
     $negatesUntouchedFile = [regex]::IsMatch(
         $semantic,
         '(?i)\b(?:not|never|don.t)\b[^.;!?]{0,30}\b(?:leave|keep)\b[^.;!?]{0,60}\bmystery_download\b'
-    ) -or [regex]::IsMatch(
-        $semantic,
-        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bmystery_download\b|\bmove\s+it\s+too\b'
     )
-    if ($negatesReportMove -or $negatesUntouchedFile) {
+    $mysteryMoveScan = [regex]::Replace(
+        $semantic,
+        '(?i)\b(?:do\s+not|don.t|never|not)\s+move(?:s|d|ing)?\b[^.;!?]{0,60}\bmystery_download\b',
+        ''
+    )
+    $proposesMysteryMove = [regex]::IsMatch(
+        $mysteryMoveScan,
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bmystery_download\b|\bmove\s+it\s+(?:also|later|too)\b'
+    )
+    if ($negatesReportMove -or $negatesUntouchedFile -or $proposesMysteryMove) {
         throw "Downloads plan contradicted the required proposal: $Value"
     }
     $movesSourceToDocuments = [regex]::IsMatch(
         $semantic,
-        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report_pdf\b[^.;!?]{0,30}\b(?:to|into|under)\b[^.;!?]{0,30}\bDocuments(?:/quarterly-report_pdf)?\b'
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report_pdf\b(?:\s+file)?\s+\b(?:to|into|under)\b\s+(?:the\s+)?\bDocuments\b(?:\s+folder)?(?:/quarterly-report_pdf)?'
     )
     $createsDocumentsThenMovesThere = [regex]::IsMatch(
         $semantic,
-        '(?i)\b(?:create|make)\b[^.;!?]{0,50}\bDocuments\b[^.;!?]{0,80}\bmove(?:s|d|ing)?\b[^.;!?]{0,50}\bquarterly-report_pdf\b[^.;!?]{0,30}\bthere\b'
+        '(?i)\b(?:create|make)\b[^.;!?]{0,50}\bDocuments\b(?:\s+folder)?[^.;!?]{0,80}\bmove(?:s|d|ing)?\b[^.;!?]{0,50}\bquarterly-report_pdf\b(?:\s+file)?\s+there\b'
     )
     if (-not ($movesSourceToDocuments -or $createsDocumentsThenMovesThere)) {
         throw "Downloads plan did not propose moving quarterly-report.pdf into Documents: $Value"
     }
     if (-not [regex]::IsMatch(
         $semantic,
-        '(?i)\b(?:leave|keep)\b[^.;!?]{0,60}\bmystery_download\b[^.;!?]{0,60}\b(?:in place|untouched)\b'
+        '(?i)\b(?:leave|keep)\b\s+(?:the\s+)?\bmystery_download\b(?:\s+file)?\s+(?:in place|untouched)\b'
     )) {
         throw "Downloads plan did not explicitly leave mystery.download untouched: $Value"
     }
@@ -75,7 +81,8 @@ function Assert-DownloadsPlanProposal {
 if ($ValidateDownloadsPlanContractOnly) {
     foreach ($accepted in @(
         "I found 2 files. Proposed plan: Create 'Documents' folder and move quarterly-report.pdf there. Leave mystery.download in place.",
-        'Move quarterly-report.pdf into Documents. Keep mystery.download untouched.'
+        'Move quarterly-report.pdf into Documents. Keep mystery.download untouched.',
+        'Move quarterly-report.pdf into Documents. Do not move mystery.download; keep mystery.download untouched.'
     )) {
         Assert-DownloadsPlanProposal -Value $accepted
     }
@@ -89,7 +96,9 @@ if ($ValidateDownloadsPlanContractOnly) {
         'Move quarterly-report.pdf and mystery.download into Documents, but keep mystery.download untouched.',
         'Create Documents and move quarterly-report.pdf and mystery.download there. Keep mystery.download untouched.',
         'Move quarterly-report.pdf to Trash. Documents remains empty. Keep mystery.download untouched.',
-        'Create Documents for later. Move quarterly-report.pdf to Trash and leave it there. Keep mystery.download untouched.'
+        'Create Documents for later. Move quarterly-report.pdf to Trash and leave it there. Keep mystery.download untouched.',
+        'Move quarterly-report.pdf to Trash and create Documents. Keep mystery.download untouched.',
+        'Create Documents for later, then move quarterly-report.pdf to Trash and leave it there. Keep mystery.download untouched.'
     )) {
         $failedClosed = $false
         try {
