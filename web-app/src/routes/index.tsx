@@ -19,12 +19,14 @@ import { AgentTaskSuggestions } from '@/containers/AgentTaskSuggestions'
 import { AgentWorkspaceLayout } from '@/containers/AgentWorkspaceLayout'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { resolveAgentWorkspaceRoot } from '@/services/agent/tauri'
+import { downloadDir } from '@tauri-apps/api/path'
+import { toast } from 'sonner'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
 })
 
-function Index() {
+export function Index() {
   const { t } = useTranslation()
   const serviceHub = useServiceHub()
   const selectedProvider = useModelProvider((state) => state.selectedProvider)
@@ -45,14 +47,28 @@ function Index() {
   useTools()
 
   const handleSelectAgentTask = useCallback(
-    (prompt: string, skillName: string) => {
+    async (prompt: string, skillName: string) => {
+      if (skillName === 'downloads-organizer') {
+        try {
+          const downloadsPath = await downloadDir()
+          if (!downloadsPath.trim()) throw new Error('Downloads is unavailable')
+          const root = await resolveAgentWorkspaceRoot(downloadsPath)
+          useAgentMode.getState().setPrimaryRoot(TEMPORARY_CHAT_ID, {
+            ...root,
+            canEdit: true,
+          })
+        } catch {
+          toast.error(t('chat:agentTasks.organizeDownloads.unavailable'))
+          return
+        }
+      }
       setPrompt(prompt)
       setSelectedAgentSkillName(skillName)
       document
         .querySelector<HTMLTextAreaElement>('[data-testid="chat-input"]')
         ?.focus()
     },
-    [setPrompt]
+    [setPrompt, t]
   )
 
   const addExternalAgentRoot = useCallback(async () => {

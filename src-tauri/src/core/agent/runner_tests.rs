@@ -24,6 +24,14 @@ struct TestRun {
     session: AgentSessionState,
 }
 
+fn assert_deterministic_agent_sampling(request: &serde_json::Value) {
+    assert_eq!(request["temperature"], 0.0);
+    assert_eq!(request["top_k"], 1);
+    assert_eq!(request["top_p"], 1.0);
+    assert_eq!(request["repeat_penalty"], 1.0);
+    assert_eq!(request["repeat_last_n"], 0);
+}
+
 #[derive(Default)]
 struct OneStepQuota {
     checks: Mutex<u32>,
@@ -253,6 +261,7 @@ async fn immediate_reply_preserves_event_order_and_completion_contract() {
     assert_eq!(request["cache_prompt"], true);
     assert_eq!(request["slot_id"], 0);
     assert_eq!(request["id_slot"], 0);
+    assert_deterministic_agent_sampling(request);
     assert!(request["grammar"]
         .as_str()
         .is_some_and(|value| !value.is_empty()));
@@ -568,6 +577,8 @@ async fn malformed_completion_is_repaired_once() {
     assert_eq!(run.requests.len(), 2);
     assert_eq!(run.requests[0]["n_predict"], 8192);
     assert_eq!(run.requests[1]["n_predict"], 1024);
+    assert_deterministic_agent_sampling(&run.requests[0]);
+    assert_deterministic_agent_sampling(&run.requests[1]);
     assert!(run.requests[1]["prompt"]
         .as_str()
         .is_some_and(|prompt| prompt.contains("### tool-call-repair")));

@@ -309,6 +309,44 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-30 — Make Agent tool-call sampling deterministic
+- **Context:** The pinned Qwen 9B model repeatedly emitted valid but different
+  tool paths or terminal replies across the same grammar-constrained Downloads
+  ritual. The prior sampling and repetition penalties preserved unnecessary
+  variation in Agent control output.
+- **Decision:** For Agent tool-call completions only, select the single
+  highest-probability token (`temperature=0`, `top_k=1`, `top_p=1`) and disable
+  repetition bias (`repeat_penalty=1`, `repeat_last_n=0`). Apply the same
+  profile to initial and repair requests; keep Chat sampling unchanged.
+- **Consequences:** The grammar and runtime validators remain the safety
+  boundary, while repeated Agent runs no longer sample alternative valid tool
+  arguments. Prompt caching remains enabled, so this is a path-compliance
+  improvement rather than a bitwise reproducibility claim.
+- **Owner:** team.
+- **Links:** [Issue #27](https://github.com/emv-dev/YoreBot/issues/27),
+  [`src-tauri/src/core/agent/llm_client.rs`](src-tauri/src/core/agent/llm_client.rs),
+  [`src-tauri/src/core/agent/runner_tests.rs`](src-tauri/src/core/agent/runner_tests.rs).
+
+### 2026-08-30 — Connect Downloads before starting the advertised task
+- **Context:** The consumer “Organize my Downloads” suggestion selected a
+  prompt and skill but no folder. Starting it could therefore use YoreBot's
+  internal fallback workspace instead of the operating-system Downloads
+  folder named by the UI.
+- **Decision:** Resolve and connect the OS Downloads folder as the editable
+  primary root before filling the suggestion. If that folder cannot be
+  resolved, show a plain failure and do not select or start the task. Extend
+  the existing manual installed-app CDP/WFP ritual to click the real
+  suggestion and prove plan-only, visible Approve once decisions, exact apply,
+  undo, denial without disk changes, and scoped fixture restoration.
+- **Consequences:** The advertised entry point no longer silently acts in an
+  internal workspace. Other Agent entry points retain their existing workspace
+  behavior. The 5.68 GB installed UI proof remains manual-only and makes no
+  broader Agent or performance claim.
+- **Owner:** team.
+- **Links:** [Issue #25](https://github.com/emv-dev/YoreBot/issues/25),
+  [`web-app/src/routes/index.tsx`](web-app/src/routes/index.tsx),
+  [`scripts/test-windows-first-use.ps1`](scripts/test-windows-first-use.ps1).
+
 ### 2026-08-30 — Audit real Windows work after pinned downloads
 - **Context:** Static network guards did not prove that installed Chat and the
   Downloads Agent stay local while handling real user content.

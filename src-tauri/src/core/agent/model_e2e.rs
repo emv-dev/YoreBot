@@ -215,13 +215,39 @@ fn live_acceptance_restricts_models_to_exact_product_pins() {
 }
 
 #[test]
-fn undo_summary_accepts_current_paths_and_restoration_semantics() {
+fn undo_summary_accepts_exact_paths_when_actions_prove_direction() {
     let events = [AgentEvent::AssistantReply {
-        text: "Moved quarterly-report.pdf back to root, mystery.download untouched".into(),
+        text: "Documents/quarterly-report.pdf, quarterly-report.pdf, mystery.download".into(),
     }];
 
-    assert_reply_mentions(&events, &["quarterly-report.pdf", "mystery.download"]);
-    assert_reply_mentions_any(&events, &["back", "restored", "root"]);
+    assert_reply_mentions(
+        &events,
+        &[
+            "Documents/quarterly-report.pdf",
+            "quarterly-report.pdf",
+            "mystery.download",
+        ],
+    );
+}
+
+#[test]
+fn reply_path_matching_rejects_a_parent_path_suffix() {
+    assert!(!reply_contains_exact_path(
+        "Documents/quarterly-report.pdf, mystery.download",
+        "quarterly-report.pdf",
+    ));
+    assert!(reply_contains_exact_path(
+        "Documents/quarterly-report.pdf, quarterly-report.pdf, mystery.download",
+        "quarterly-report.pdf",
+    ));
+    assert!(reply_contains_exact_path(
+        "Moved quarterly-report.pdf to Documents/quarterly-report.pdf. Leave mystery.download untouched.",
+        "Documents/quarterly-report.pdf",
+    ));
+    assert!(!reply_contains_exact_path(
+        "Moved quarterly-report.pdf to Documents/quarterly-report.pdf.bak; mystery.download untouched.",
+        "Documents/quarterly-report.pdf",
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -356,10 +382,16 @@ async fn downloads_agent_acceptance() {
         file("quarterly-report.pdf", b"REPORT_SENTINEL_481"),
     ]);
     assert_snapshot(&harness.downloads, &undone);
-    // Tool, approval, and snapshot assertions above prove the exact historical
-    // source. The user-facing summary must accurately describe current state.
-    assert_reply_mentions(&undo, &["quarterly-report.pdf", "mystery.download"]);
-    assert_reply_mentions_any(&undo, &["back", "restored", "root"]);
+    // Tool, approval, status, and snapshot assertions above prove direction.
+    // The reply must identify the exact source, restored path, and untouched file.
+    assert_reply_mentions(
+        &undo,
+        &[
+            "Documents/quarterly-report.pdf",
+            "quarterly-report.pdf",
+            "mystery.download",
+        ],
+    );
 
     run_denied_scenario(&mut harness).await;
 }
@@ -756,8 +788,32 @@ fn assert_reply_mentions(events: &[AgentEvent], expected_paths: &[&str]) {
         })
         .unwrap_or_else(|| panic!("missing assistant reply: {events:#?}"));
     for path in expected_paths {
-        assert!(reply.contains(path), "reply omits {path:?}: {reply:?}");
+        assert!(
+            reply_contains_exact_path(&reply, path),
+            "reply omits exact path {path:?}: {reply:?}"
+        );
     }
+}
+
+fn reply_contains_exact_path(reply: &str, path: &str) -> bool {
+    reply.match_indices(path).any(|(start, _)| {
+        let before = reply[..start].chars().next_back();
+        let after = &reply[start + path.len()..];
+        !before.is_some_and(is_path_token_char) && is_exact_path_end(after)
+    })
+}
+
+fn is_exact_path_end(remainder: &str) -> bool {
+    let mut chars = remainder.chars();
+    match chars.next() {
+        None => true,
+        Some('.') => chars.next().is_none_or(|next| !is_path_token_char(next)),
+        Some(value) => !is_path_token_char(value),
+    }
+}
+
+fn is_path_token_char(value: char) -> bool {
+    value.is_ascii_alphanumeric() || matches!(value, '/' | '\\' | '_' | '-' | '.' | ':')
 }
 
 fn assert_reply_mentions_any(events: &[AgentEvent], expected_terms: &[&str]) {

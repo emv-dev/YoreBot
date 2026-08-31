@@ -230,7 +230,13 @@ export const MessageItem = memo(
       }
 
       return (
-        <div key={block.key} className="w-full">
+        <div
+          key={block.key}
+          className="w-full"
+          aria-label={
+            message.role === 'assistant' ? 'YoreBot reply text' : undefined
+          }
+        >
           {message.role === 'user' ? (
             <div className="flex justify-end w-full h-full text-start wrap-break-word whitespace-normal">
               <div className="bg-secondary relative text-foreground p-2 rounded-md inline-block max-w-[80%]">
@@ -389,7 +395,10 @@ export const MessageItem = memo(
             </div>
           ))}
           {block.agentSummary?.error && (
-            <div className="py-1 text-xs text-destructive">
+            <div
+              className="py-1 text-xs text-destructive"
+              aria-label="Agent run error"
+            >
               {block.agentSummary.error.category}:{' '}
               {block.agentSummary.error.message}
             </div>

@@ -85,7 +85,8 @@
     "title": "Try a task",
     "organizeDownloads": {
       "title": "Organize my Downloads",
-      "prompt": "Organize my Downloads folder. First show me exactly what you propose. Move files only after I accept the plan and approve each move. Never delete or overwrite anything."
+      "prompt": "Organize my Downloads folder. First show me exactly what you propose. Move files only after I accept the plan and approve each move. Never delete or overwrite anything.",
+      "unavailable": "YoreBot couldn't open your Downloads folder. Nothing was changed."
     }
   },
   "threadType": {

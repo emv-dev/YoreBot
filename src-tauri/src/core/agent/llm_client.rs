@@ -76,11 +76,13 @@ impl CompletionRequest {
             grammar: Some(grammar.into()),
             slot_id: Some(slot_id),
             max_tokens: COMPLETION_MAX_TOKENS,
-            temperature: 0.2,
-            top_p: 0.95,
-            top_k: 40,
-            repeat_penalty: 1.1,
-            repeat_last_n: 256,
+            // Agent output is schema-constrained control data. Keep one
+            // highest-probability candidate and disable repetition bias.
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 1,
+            repeat_penalty: 1.0,
+            repeat_last_n: 0,
             stop: Vec::new(),
         }
     }
