@@ -1,17 +1,75 @@
 #Requires -Version 7.2
 
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory, ParameterSetName = 'Run')]
     [string] $InstallerPath,
 
-    [Parameter(Mandatory)]
-    [string] $WorkRoot
+    [Parameter(Mandatory, ParameterSetName = 'Run')]
+    [string] $WorkRoot,
+
+    [Parameter(Mandatory, ParameterSetName = 'PlanContract')]
+    [switch] $ValidateDownloadsPlanContractOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+
+function Assert-DownloadsPlanProposal {
+    param([Parameter(Mandatory)][string] $Value)
+
+    $normalized = [regex]::Replace($Value.Replace('\', '/'), '\s+', ' ').Trim()
+    $movesSourceToDocuments = [regex]::IsMatch(
+        $normalized,
+        '(?i)\bmove(?:s|d|ing)?\b.{0,80}\bquarterly-report\.pdf\b.{0,80}\bDocuments(?:/quarterly-report\.pdf)?\b'
+    )
+    $createsDocumentsThenMovesThere = [regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:create|make)\b.{0,50}\bDocuments\b.{0,80}\bmove(?:s|d|ing)?\b.{0,50}\bquarterly-report\.pdf\b.{0,30}\bthere\b'
+    )
+    if (-not ($movesSourceToDocuments -or $createsDocumentsThenMovesThere)) {
+        throw "Downloads plan did not propose moving quarterly-report.pdf into Documents: $Value"
+    }
+    if (-not [regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:leave|keep)\b.{0,60}\bmystery\.download\b.{0,60}\b(?:in place|untouched)\b'
+    )) {
+        throw "Downloads plan did not explicitly leave mystery.download untouched: $Value"
+    }
+    if ([regex]::IsMatch(
+        $normalized,
+        '(?i)\b(?:Archives|Images|Audio|Video|Installers)\b'
+    )) {
+        throw "Downloads plan proposed an unexpected destination category: $Value"
+    }
+}
+
+if ($ValidateDownloadsPlanContractOnly) {
+    foreach ($accepted in @(
+        "I found 2 files. Proposed plan: Create 'Documents' folder and move quarterly-report.pdf there. Leave mystery.download in place.",
+        'Move quarterly-report.pdf into Documents. Keep mystery.download untouched.'
+    )) {
+        Assert-DownloadsPlanProposal -Value $accepted
+    }
+    foreach ($rejected in @(
+        'Move quarterly-report.pdf into Archives. Keep mystery.download untouched.',
+        'Move quarterly-report.pdf into Documents. Review mystery.download later.',
+        'Keep mystery.download untouched. Decide where quarterly-report.pdf belongs later.'
+    )) {
+        $failedClosed = $false
+        try {
+            Assert-DownloadsPlanProposal -Value $rejected
+        } catch {
+            $failedClosed = $true
+        }
+        if (-not $failedClosed) {
+            throw "Downloads plan contract accepted an unsafe fixture: $rejected"
+        }
+    }
+    Write-Host 'Downloads plan semantic contract passed.'
+    exit 0
+}
 
 . (Join-Path $PSScriptRoot 'windows-network-audit.ps1')
 
@@ -1557,11 +1615,7 @@ JSON.stringify((() => {
     if ((Get-DownloadsSnapshot -Root $downloadsRoot) -cne $planSnapshot) {
         throw 'The Downloads plan mutated disk before acceptance or approval'
     }
-    Assert-TextContainsAll -Value $planReply -Expected @(
-        'quarterly-report.pdf',
-        'Documents/quarterly-report.pdf',
-        'mystery.download'
-    ) -Description 'Downloads plan'
+    Assert-DownloadsPlanProposal -Value $planReply
 
     $documentsPath = Join-Path $boundDownloadsRoot 'Documents'
     $reportPath = Join-Path $boundDownloadsRoot 'quarterly-report.pdf'

@@ -70,6 +70,7 @@ jobs:
             }
           }
           ./scripts/test-windows-pinned-model.ps1 -ValidateCargoParserOnly
+          ./scripts/test-windows-first-use.ps1 -ValidateDownloadsPlanContractOnly
           foreach ($profile in @('ordinary-16gb', 'high-end-32gb')) {
             ./scripts/test-windows-pinned-model.ps1 -ValidateManifestOnly -HardwareProfile $profile
           }

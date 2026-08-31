@@ -690,6 +690,10 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     "workspaces?.['temporary-chat']?.primaryRoot",
     "skill -ceq '/downloads-organizer'",
     '-UseExistingPrompt',
+    'Assert-DownloadsPlanProposal',
+    '$ValidateDownloadsPlanContractOnly',
+    "Create 'Documents' folder and move quarterly-report.pdf there",
+    "Leave mystery.download in place",
     'The Downloads plan mutated disk before acceptance or approval',
     'Create folder: $documentsPath',
     'Move: $reportPath → $movedReportPath',
@@ -703,6 +707,10 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
   ]) {
     assert.ok(script.includes(value), `installed Downloads proof omits ${value}`)
   }
+  assert.match(
+    workflow,
+    /test-windows-first-use\.ps1 -ValidateDownloadsPlanContractOnly/
+  )
 
   const completedChat = script.indexOf(
     "throw 'Actual Chat UI did not complete with the expected local response marker'"
@@ -721,6 +729,13 @@ test('installed Organize my Downloads binds the OS folder and proves visible saf
     plan
   )
   const apply = script.indexOf('$applyReply = Invoke-YoreBotAgentTurn', planSnapshot)
+  const planGate = script.slice(planSnapshot, apply)
+  assert.match(planGate, /Assert-DownloadsPlanProposal -Value \$planReply/)
+  assert.doesNotMatch(planGate, /Assert-TextContainsAll/)
+  assert.match(
+    script,
+    /\(\?:Archives\|Images\|Audio\|Video\|Installers\)/
+  )
   const undo = script.indexOf('$undoReply = Invoke-YoreBotAgentTurn', apply)
   const deny = script.indexOf('$denyReply = Invoke-YoreBotAgentTurn', undo)
   const denySnapshot = script.indexOf('Deny changed the Downloads disk state', deny)
