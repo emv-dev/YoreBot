@@ -1,9 +1,9 @@
-# Windows signed-candidate setup
+# Windows signed-draft setup
 
 YoreBot uses Azure Artifact Signing with the existing Tauri/NSIS package. It
-does not create an MSIX package. The workflow produces an ephemeral candidate
-for verification; it is not a public release and does not publish to GitHub
-Releases or enable the updater.
+does not create an MSIX package. The manual workflow verifies one signed
+candidate, then stages it as an unpublished GitHub draft. It never publishes a
+release, changes the public site, or enables the updater.
 
 ## Human setup
 
@@ -38,15 +38,28 @@ Releases or enable the updater.
    - `AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME`
    - `YOREBOT_WINDOWS_SIGNER_SUBJECT` — the exact Authenticode certificate
      subject expected from `Get-AuthenticodeSignature`.
+   - `YOREBOT_GUMROAD_PRODUCT_ID`
+   - `YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL`
+   - `YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL`
+   - `YOREBOT_GUMROAD_MANAGE_URL`
+
+   The Gumroad values are public build configuration, not credentials. They
+   must satisfy the exact one-product contract in
+   [`GUMROAD_ACCESS.md`](GUMROAD_ACCESS.md); the workflow validates them and
+   proves the built app contains each exact value before signing.
 
 Authentication is OIDC federation only. Do not add long-lived Azure credential
 secrets to the repository or environment.
 
 ## Run and evidence
 
-Manually dispatch `YoreBot Windows signed candidate` and enter
-`SIGN_YOREBOT_WINDOWS_CANDIDATE`. The workflow fails before checkout when the
-confirmation or any required variable is absent.
+Manually dispatch `YoreBot Windows signed draft release`, enter
+`SIGN_AND_DRAFT_YOREBOT_WINDOWS_RELEASE`, and supply the exact app-version tag
+`yorebot-v2.0.0`. The repository inherited upstream `v2.0.0` through
+`v2.0.25` tags, so the workflow rejects generic `v*` tags and accepts only
+`yorebot-v${tauri version}`. It also refuses any existing tag or release. The
+workflow fails before build when confirmation, branch, tag, or any required
+variable is absent or invalid.
 
 It builds the release app without bundling, signs the main YoreBot executable,
 bundles NSIS, signs the installer, and then requires:
@@ -57,13 +70,30 @@ bundles NSIS, signs the installer, and then requires:
   `b10431/win-cpu-x64` readiness, safe uninstall, and sibling-file/process
   survival.
 
+Only after those gates pass, the final step creates the exact lightweight tag
+at the workflow commit and one unpublished draft containing exactly:
+
+- `YoreBot_2.0.0_x64-setup.exe`;
+- `YoreBot_2.0.0_x64-setup.exe.sha256`.
+
+It verifies draft state, target commit, asset names, sizes, server-reported
+SHA-256 digests, and each exact
+`https://github.com/emv-dev/YoreBot/releases/download/...` URL. The draft title
+and description are publication-ready; a hidden run marker exists only to
+prove rollback ownership. If staging fails, cleanup re-reads that exact marker,
+target commit, release id, and tag target before deleting anything. It never
+deletes pre-existing or ambiguous state.
+
 Only the main app executable and NSIS installer are claimed as signed. Bundled
 helpers such as `jan-cli.exe`, `bun`, `uv`, `llama-server.exe`, and its DLLs are
 not covered by this story. YoreBot is a public repository, so an Actions
 artifact would be available to signed-in users with repository read access.
-The workflow therefore does not upload the candidate; the hosted runner
-discards it after verification. A valid signature also does not prove
-immediate SmartScreen reputation or authorize a public launch.
+The workflow therefore does not upload an Actions artifact. The job carries
+`contents: write` throughout because the verified installer cannot safely cross
+jobs here. Every action is pinned, checkout credentials are not persisted, and
+only the final shell step receives `GH_TOKEN` in its environment. Publishing
+the verified draft remains a separate human action. A valid signature also does
+not prove immediate SmartScreen reputation or authorize a public launch.
 
 The Azure actions are pinned to the reviewed `v3` and `v2` commits. Setup
 references: [Artifact Signing OIDC](https://github.com/Azure/artifact-signing-action/blob/c7ab2a863ab5f9a846ddb8265964877ef296ee82/docs/OIDC.md),
