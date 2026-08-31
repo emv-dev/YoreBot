@@ -49,18 +49,18 @@ function Assert-DownloadsPlanProposal {
     }
     $movesSourceToDocuments = [regex]::IsMatch(
         $semantic,
-        '(?i)\bmove(?:s|d|ing)?\b.{0,60}\bquarterly-report_pdf\b.{0,30}\b(?:to|into|under)\b.{0,30}\bDocuments(?:/quarterly-report_pdf)?\b'
+        '(?i)\bmove(?:s|d|ing)?\b[^.;!?]{0,60}\bquarterly-report_pdf\b[^.;!?]{0,30}\b(?:to|into|under)\b[^.;!?]{0,30}\bDocuments(?:/quarterly-report_pdf)?\b'
     )
     $createsDocumentsThenMovesThere = [regex]::IsMatch(
         $semantic,
-        '(?i)\b(?:create|make)\b.{0,50}\bDocuments\b.{0,80}\bmove(?:s|d|ing)?\b.{0,50}\bquarterly-report_pdf\b.{0,30}\bthere\b'
+        '(?i)\b(?:create|make)\b[^.;!?]{0,50}\bDocuments\b[^.;!?]{0,80}\bmove(?:s|d|ing)?\b[^.;!?]{0,50}\bquarterly-report_pdf\b[^.;!?]{0,30}\bthere\b'
     )
     if (-not ($movesSourceToDocuments -or $createsDocumentsThenMovesThere)) {
         throw "Downloads plan did not propose moving quarterly-report.pdf into Documents: $Value"
     }
     if (-not [regex]::IsMatch(
         $semantic,
-        '(?i)\b(?:leave|keep)\b.{0,60}\bmystery_download\b.{0,60}\b(?:in place|untouched)\b'
+        '(?i)\b(?:leave|keep)\b[^.;!?]{0,60}\bmystery_download\b[^.;!?]{0,60}\b(?:in place|untouched)\b'
     )) {
         throw "Downloads plan did not explicitly leave mystery.download untouched: $Value"
     }
@@ -87,7 +87,9 @@ if ($ValidateDownloadsPlanContractOnly) {
         'Move quarterly-report.pdf nowhere; Documents is not appropriate. Leave mystery.download in place.',
         'Move quarterly-report.pdf into Documents. Do not keep mystery.download untouched; move it too.',
         'Move quarterly-report.pdf and mystery.download into Documents, but keep mystery.download untouched.',
-        'Create Documents and move quarterly-report.pdf and mystery.download there. Keep mystery.download untouched.'
+        'Create Documents and move quarterly-report.pdf and mystery.download there. Keep mystery.download untouched.',
+        'Move quarterly-report.pdf to Trash. Documents remains empty. Keep mystery.download untouched.',
+        'Create Documents for later. Move quarterly-report.pdf to Trash and leave it there. Keep mystery.download untouched.'
     )) {
         $failedClosed = $false
         try {
