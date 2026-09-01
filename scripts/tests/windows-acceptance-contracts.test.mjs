@@ -1071,20 +1071,25 @@ test('manual Windows first use drives installed automatic setup into real Chat',
   assert.match(workflow, /YoreBotSetupScreen\.test\.tsx/)
 })
 
-test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublished', () => {
+test('signed Windows draft release is manual-only, OIDC-only, ordered, and fail-closed', () => {
   const signed = read('.github/workflows/windows-signed-candidate.yml')
+  const internal = read('.github/workflows/windows-internal.yml')
   const blocked = read('.github/workflows/release.yml')
   const cargo = read('src-tauri/Cargo.toml')
+  const preflightScript = read('scripts/validate-windows-draft-release.ps1')
 
   assert.match(signed, /^on:\n\s+workflow_dispatch:\s*$/m)
   assert.doesNotMatch(signed, /^\s+(push|pull_request|release|schedule):/m)
-  assert.match(signed, /^\s+contents: read\s*$/m)
+  assert.match(signed, /^\s+contents: write\s*$/m)
   assert.match(signed, /^\s+id-token: write\s*$/m)
-  assert.doesNotMatch(signed, /contents: write/)
   assert.match(signed, /^\s+environment: windows-production-signing\s*$/m)
   assert.match(signed, /confirmation:/)
-  assert.match(signed, /SIGN_YOREBOT_WINDOWS_CANDIDATE/)
+  assert.match(signed, /draft_tag:/)
+  assert.match(signed, /SIGN_AND_DRAFT_YOREBOT_WINDOWS_RELEASE/)
   assert.match(signed, /\$env:GITHUB_REF -cne 'refs\/heads\/yorebot-v2-base'/)
+  assert.match(signed, /\$env:GITHUB_REPOSITORY -cne 'emv-dev\/YoreBot'/)
+  assert.match(signed, /YOREBOT_DRAFT_TAG: \$\{\{ inputs\.draft_tag \}\}/)
+  assert.match(signed, /YOREBOT_RELEASE_BASE_URL: https:\/\/github\.com\/emv-dev\/YoreBot\/releases\/download/)
 
   for (const variable of [
     'AZURE_CLIENT_ID',
@@ -1094,10 +1099,18 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
     'AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME',
     'AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME',
     'YOREBOT_WINDOWS_SIGNER_SUBJECT',
+    'YOREBOT_GUMROAD_PRODUCT_ID',
+    'YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL',
+    'YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL',
+    'YOREBOT_GUMROAD_MANAGE_URL',
   ]) {
     assert.match(signed, new RegExp(`vars\\.${variable}`), `missing variable: ${variable}`)
   }
   assert.doesNotMatch(signed, /secrets\.|AZURE_CLIENT_SECRET|\bcreds:/)
+  assert.match(
+    signed,
+    /uses: actions\/checkout@[0-9a-f]{40}[\s\S]{0,200}persist-credentials: false/
+  )
 
   const actionRefs = [...signed.matchAll(/^\s*- uses: [^@\s]+@([^\s#]+).*$/gm)]
     .map((match) => match[1])
@@ -1124,6 +1137,7 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
   )
 
   const preflight = signed.indexOf('- name: Refuse unconfigured or unconfirmed signing')
+  const validateRelease = signed.indexOf('- name: Validate draft tag and Gumroad build configuration')
   const login = signed.indexOf('- name: Azure OIDC login')
   const build = signed.indexOf('- name: Build release app without bundle')
   const signApp = signed.indexOf('- name: Sign main app executable')
@@ -1134,8 +1148,11 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
     '- name: Clear installer-signing Azure session'
   )
   const verify = signed.indexOf('- name: Verify signed candidate by fresh install')
+  const draft = signed.indexOf('- name: Create and verify unpublished signed draft release')
   assert.ok(
     preflight >= 0 &&
+      preflight < validateRelease &&
+      validateRelease < build &&
       preflight < build &&
       build < login &&
       build < signApp &&
@@ -1144,7 +1161,8 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
       clearAppSession < bundle &&
       bundle < signInstaller &&
       signInstaller < clearInstallerSession &&
-      clearInstallerSession < verify
+      clearInstallerSession < verify &&
+      verify < draft
   )
   assert.match(cargo, /^default-run\s*=\s*"Atomic-Chat"\s*$/m)
   assert.match(signed, /files-folder-filter: Atomic-Chat\.exe/)
@@ -1159,10 +1177,115 @@ test('signed Windows candidate is manual-only, OIDC-only, ordered, and unpublish
   )
   assert.match(signed, /tauri build --no-bundle --ci/)
   assert.match(signed, /tauri bundle --bundles nsis --ci/)
-  assert.doesNotMatch(
-    signed,
-    /upload-artifact|gh release|upload-release|create-release|retention-days|msix/i
+  const bundleBlock = signed.slice(bundle, signInstaller)
+  assert.match(bundleBlock, /\$env:YOREBOT_DRAFT_TAG -cne "yorebot-v\$appVersion"/)
+  assert.doesNotMatch(bundleBlock, /\$tag -cne "yorebot-v\$appVersion"/)
+  assert.match(signed.slice(validateRelease, build), /validate-windows-draft-release\.ps1/)
+  assert.match(signed.slice(build, login), /YOREBOT_GUMROAD_PRODUCT_ID/)
+  assert.match(signed.slice(build, login), /Assert-BytesContain/)
+  assert.doesNotMatch(signed, /upload-artifact|retention-days|msix/i)
+
+  const beforeDraft = signed.slice(0, draft)
+  const draftBlock = signed.slice(draft)
+  assert.doesNotMatch(beforeDraft, /GH_TOKEN|github\.token/)
+  assert.match(draftBlock, /GH_TOKEN: \$\{\{ github\.token \}\}/)
+  assert.equal((signed.match(/GH_TOKEN:/g) ?? []).length, 1)
+  assert.match(draftBlock, /\$repositoryApi = "https:\/\/api\.github\.com\/repos\/\$env:GITHUB_REPOSITORY"/)
+  assert.match(draftBlock, /-Uri "\$repositoryApi\/releases"[\s\S]{0,160}-Method POST/)
+  assert.equal(
+    draftBlock.match(/-Uri "\$repositoryApi\/releases"[\s\S]{0,160}-Method POST/g)?.length,
+    1
   )
+  assert.equal(
+    draftBlock.match(/-Uri "\$repositoryApi\/git\/refs"[\s\S]{0,160}-Method POST/g)?.length,
+    1
+  )
+  const tagCreate = draftBlock.indexOf('-Uri "$repositoryApi/git/refs"')
+  const tagOwned = draftBlock.indexOf('$tagCreatedByRun = $true')
+  const releaseCreate = draftBlock.indexOf('-Uri "$repositoryApi/releases"')
+  const tagDelete = draftBlock.indexOf('-Uri "$repositoryApi/git/refs/tags/$encodedTag"')
+  assert.ok(tagCreate >= 0 && tagCreate < tagOwned && tagOwned < releaseCreate && releaseCreate < tagDelete)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /-ExpectedStatus 201/)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /\$createdTagRef\.object\.type -cne 'commit'/)
+  assert.match(draftBlock.slice(tagCreate, tagOwned), /\$createdTagRef\.object\.sha -cne \$env:GITHUB_SHA/)
+  assert.match(draftBlock, /draft = \$true/)
+  assert.match(draftBlock, /\$releaseName = "YoreBot \$appVersion for Windows"/)
+  assert.match(draftBlock, /\$releaseBody = "Private local Chat and a Downloads task that asks before changing files/)
+  assert.match(draftBlock, /<!-- YOREBOT_DRAFT_OWNER run=/)
+  assert.match(draftBlock, /\.sha256/)
+  assert.match(draftBlock, /assets\.Count -ne 2/)
+  assert.match(draftBlock, /browser_download_url/)
+  assert.match(draftBlock, /\[string\]\$asset\.digest -cne \$expectedAsset\.Digest/)
+  assert.match(draftBlock, /Digest = "sha256:\$installerHash"/)
+  assert.match(draftBlock, /Digest = "sha256:\$checksumHash"/)
+  assert.match(draftBlock, /Dictionary\[string, object\].*StringComparer\]::Ordinal/s)
+  const assetsVerified = draftBlock.indexOf('if ($expectedAssets.Count -ne 0)')
+  const finalTagCheck = draftBlock.indexOf('$finalTagRef = Convert-GitHubJson')
+  const successOutput = draftBlock.indexOf('Write-Host "Unpublished signed Windows draft verified')
+  assert.ok(assetsVerified >= 0 && assetsVerified < finalTagCheck && finalTagCheck < successOutput)
+  assert.match(
+    draftBlock.slice(finalTagCheck, successOutput),
+    /\$finalTagRef\.ref -cne "refs\/tags\/\$tag"[\s\S]*\$finalTagRef\.object\.type -cne 'commit'[\s\S]*\$finalTagRef\.object\.sha -cne \$env:GITHUB_SHA/
+  )
+  assert.match(draftBlock, /YOREBOT_RELEASE_BASE_URL/)
+  assert.match(draftBlock, /Get-AuthenticodeSignature/)
+  assert.match(draftBlock, /TimeStamperCertificate/)
+  assert.match(draftBlock, /\$createdReleaseId/)
+  assert.match(draftBlock, /\$tagCreationAttempted = \$true/)
+  assert.match(draftBlock, /\$releaseCreationAttempted = \$true/)
+  assert.match(draftBlock, /\$recordedReleaseId = \$createdReleaseId/)
+  assert.match(draftBlock, /\$release\.upload_url\)/)
+  assert.doesNotMatch(draftBlock, /\$release\.upload_url\s*\|\s*Out-String/)
+  assert.match(draftBlock, /Invoke-WebRequest @request/)
+  assert.match(draftBlock, /-InFile \(\[string\]\$asset\.Path\)/)
+  assert.match(preflightScript, /https:\/\/uploads\.github\.com\/repos\/\$RepositoryName\/releases\/\$ExactReleaseId\/assets/)
+  assert.doesNotMatch(draftBlock, /api\.uploads\.github\.com/)
+  assert.match(draftBlock, /\$releaseProbe = Invoke-GitHubRequest -Uri "\$repositoryApi\/releases\/tags\/\$encodedTag"/)
+  assert.match(draftBlock, /\$tagProbe = Invoke-GitHubRequest -Uri "\$repositoryApi\/git\/ref\/tags\/\$encodedTag"/)
+  assert.match(draftBlock, /release ownership probe transport/)
+  assert.match(draftBlock, /tag ownership probe transport/)
+  assert.match(draftBlock, /\$ownedRelease\.name -cne \$releaseName/)
+  assert.match(draftBlock, /\$ownedRelease\.body -cne \$releaseBody/)
+  assert.match(draftBlock, /\$ownedRelease\.id -ne \$recordedReleaseId/)
+  assert.doesNotMatch(draftBlock, /\.target_commitish -cne \$env:GITHUB_SHA/)
+  assert.match(draftBlock, /\$ownedTag\.object\.sha -cne \$env:GITHUB_SHA/)
+  assert.match(draftBlock, /\$tagCreatedByRun -and\s+\$releaseStateSafeForTagCleanup/)
+  assert.match(draftBlock, /tag creation response did not prove ownership/)
+  assert.match(draftBlock, /-Uri "\$repositoryApi\/releases\/\$\(\[long\]\$ownedRelease\.id\)"/)
+  assert.match(draftBlock, /-Uri "\$repositoryApi\/git\/refs\/tags\/\$encodedTag"/)
+  assert.match(draftBlock, /Draft release failed and cleanup was incomplete/)
+  assert.doesNotMatch(draftBlock, /\$createdTag\s*=|--latest|--prerelease|gh release|gh api/)
+
+  for (const value of [
+    '[switch] $ValidateContractOnly',
+    "'yorebot-v$version'",
+    "'https'",
+    "'monthly'",
+    "'yearly'",
+    "'/library'",
+    'same Gumroad product',
+    'existing tag',
+    'existing release',
+    'uploads.github.com',
+    'api.uploads.github.com',
+    'assets{?name,label}`n',
+  ]) {
+    assert.ok(preflightScript.includes(value), `missing draft preflight contract: ${value}`)
+  }
+  for (const unsafeTag of [
+    'v2.0.0',
+    'yorebot-v2.0.1',
+    'yorebot-v2.0.0-beta.1',
+  ]) {
+    assert.ok(preflightScript.includes(unsafeTag), `missing rejected tag fixture: ${unsafeTag}`)
+  }
+  assert.match(preflightScript, /\$gumroadHost = \$uri\.DnsSafeHost\.ToLowerInvariant\(\)/)
+  assert.doesNotMatch(preflightScript, /^\s*\$host\s*=/mi)
+  assert.match(
+    internal,
+    /validate-windows-draft-release\.ps1 -ValidateContractOnly/
+  )
+  assert.match(internal, /scripts\/validate-windows-draft-release\.ps1/)
 
   assert.match(blocked, /^on:\n\s+workflow_dispatch:\s*$/m)
   assert.match(blocked, /^\s+contents: read\s*$/m)
@@ -1195,7 +1318,7 @@ test('signed installer smoke requires valid exact timestamped signatures', () =>
   )
 })
 
-test('Windows signing setup documents the human-only Azure boundary', () => {
+test('Windows signing setup documents the human-only Azure and draft boundary', () => {
   const doc = read('docs/WINDOWS_SIGNING.md')
 
   for (const value of [
@@ -1211,16 +1334,26 @@ test('Windows signing setup documents the human-only Azure boundary', () => {
     'AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME',
     'AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME',
     'YOREBOT_WINDOWS_SIGNER_SUBJECT',
-    'SIGN_YOREBOT_WINDOWS_CANDIDATE',
+    'YOREBOT_GUMROAD_PRODUCT_ID',
+    'YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL',
+    'YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL',
+    'YOREBOT_GUMROAD_MANAGE_URL',
+    'SIGN_AND_DRAFT_YOREBOT_WINDOWS_RELEASE',
+    'yorebot-v2.0.0',
   ]) {
     assert.ok(doc.includes(value), `missing signing setup boundary: ${value}`)
   }
   assert.match(doc, /OIDC/i)
   assert.match(doc, /cost|billing|charge/i)
   assert.match(doc, /does not create|will not create/i)
-  assert.match(doc, /not a public release|does not publish/i)
+  assert.match(doc, /draft|unpublished/i)
+  assert.match(doc, /publishing[\s\S]{0,80}separate|does not publish|never publishes/i)
   assert.match(doc, /public repository/i)
   assert.match(doc, /does not upload/i)
+  assert.match(doc, /server-reported\s+SHA-256 digests/i)
+  assert.match(doc, /hidden run marker/i)
+  assert.match(doc, /contents: write.*throughout/is)
+  assert.match(doc, /only the final shell step receives `GH_TOKEN`/i)
   assert.doesNotMatch(doc, /client secret/i)
 })
 

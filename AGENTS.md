@@ -309,6 +309,33 @@ Append-only. Newest at top. Each entry follows this shape:
 
 ---
 
+### 2026-08-31 — Stage only verified signed Windows drafts
+- **Context:** The manual Azure path verified and discarded a signed NSIS
+  candidate, while launch still needed a controlled handoff containing the
+  exact paid-access build configuration and no public publication.
+- **Decision:** Extend the existing protected, default-branch workflow to
+  require the exact `yorebot-v${tauri version}` tag, all Azure variables, and
+  all four public Gumroad build values. Prove those values are embedded, retain
+  the existing signature and install smoke, then create one unpublished draft
+  with only the signed installer and its SHA-256 file. Refuse existing tags or
+  releases. Keep checkout credentials unpersisted, pass `GH_TOKEN` only to the
+  final shell step, and verify GitHub's server-side asset digests. On failure,
+  clean up only a draft whose hidden run marker and exact commit/tag targets
+  prove it was created by that run. Treat the tag as run-owned only after the
+  explicit create-ref request returns the exact HTTP 201/ref/SHA response;
+  ambiguous tag creation is never deleted automatically.
+- **Consequences:** A configured human dispatch can produce a reviewable draft
+  without an Actions artifact or an unsigned staging path. The same job needs
+  repository write permission for the entire job because the verified installer
+  cannot safely cross jobs in this public repository; every action is pinned,
+  checkout credentials are not persisted, and only the final shell step receives
+  `GH_TOKEN` in its environment. Publishing, Azure/Gumroad setup, charges, and
+  public-site changes remain separate human actions.
+- **Owner:** team.
+- **Links:** [Issue #28](https://github.com/emv-dev/YoreBot/issues/28),
+  [`.github/workflows/windows-signed-candidate.yml`](.github/workflows/windows-signed-candidate.yml),
+  [`docs/WINDOWS_SIGNING.md`](docs/WINDOWS_SIGNING.md).
+
 ### 2026-08-30 — Make Agent tool-call sampling deterministic
 - **Context:** The pinned Qwen 9B model repeatedly emitted valid but different
   tool paths or terminal replies across the same grammar-constrained Downloads

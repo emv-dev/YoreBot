@@ -1,15 +1,19 @@
-name: YoreBot Windows signed candidate
+name: YoreBot Windows signed draft release
 
 on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: Type SIGN_YOREBOT_WINDOWS_CANDIDATE to accept the Azure signing charge boundary
+        description: Type SIGN_AND_DRAFT_YOREBOT_WINDOWS_RELEASE to accept signing charges and create an unpublished draft
+        required: true
+        type: string
+      draft_tag:
+        description: Exact YoreBot app-version tag (currently yorebot-v2.0.0)
         required: true
         type: string
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -22,6 +26,8 @@ jobs:
     environment: windows-production-signing
     env:
       YOREBOT_SIGNING_CONFIRMATION: ${{ inputs.confirmation }}
+      YOREBOT_DRAFT_TAG: ${{ inputs.draft_tag }}
+      YOREBOT_RELEASE_BASE_URL: https://github.com/emv-dev/YoreBot/releases/download
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
@@ -29,17 +35,27 @@ jobs:
       AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
       AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
       YOREBOT_WINDOWS_SIGNER_SUBJECT: ${{ vars.YOREBOT_WINDOWS_SIGNER_SUBJECT }}
+      YOREBOT_GUMROAD_PRODUCT_ID: ${{ vars.YOREBOT_GUMROAD_PRODUCT_ID }}
+      YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL: ${{ vars.YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL }}
+      YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL: ${{ vars.YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL }}
+      YOREBOT_GUMROAD_MANAGE_URL: ${{ vars.YOREBOT_GUMROAD_MANAGE_URL }}
     steps:
       - name: Refuse unconfigured or unconfirmed signing
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ($env:YOREBOT_SIGNING_CONFIRMATION -cne 'SIGN_YOREBOT_WINDOWS_CANDIDATE') {
-            throw 'Signing was not explicitly confirmed'
+          if ($env:YOREBOT_SIGNING_CONFIRMATION -cne 'SIGN_AND_DRAFT_YOREBOT_WINDOWS_RELEASE') {
+            throw 'Signing and draft creation were not explicitly confirmed'
           }
           if ($env:GITHUB_REF -cne 'refs/heads/yorebot-v2-base') {
-            throw "Signing candidates must use refs/heads/yorebot-v2-base, not $env:GITHUB_REF"
+            throw "Signed drafts must use refs/heads/yorebot-v2-base, not $env:GITHUB_REF"
+          }
+          if ($env:GITHUB_REPOSITORY -cne 'emv-dev/YoreBot') {
+            throw "Signed drafts must run in emv-dev/YoreBot, not $env:GITHUB_REPOSITORY"
+          }
+          if ($env:YOREBOT_DRAFT_TAG -notmatch '^yorebot-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw 'Draft tag must be a clean YoreBot-namespaced semantic version'
           }
           $required = @(
             'AZURE_CLIENT_ID',
@@ -48,7 +64,11 @@ jobs:
             'AZURE_ARTIFACT_SIGNING_ENDPOINT',
             'AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME',
             'AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME',
-            'YOREBOT_WINDOWS_SIGNER_SUBJECT'
+            'YOREBOT_WINDOWS_SIGNER_SUBJECT',
+            'YOREBOT_GUMROAD_PRODUCT_ID',
+            'YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL',
+            'YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL',
+            'YOREBOT_GUMROAD_MANAGE_URL'
           )
           $missing = @(
             $required | Where-Object {
@@ -60,6 +80,22 @@ jobs:
           }
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate draft tag and Gumroad build configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/validate-windows-draft-release.ps1 `
+            -DraftTag $env:YOREBOT_DRAFT_TAG `
+            -ProductId $env:YOREBOT_GUMROAD_PRODUCT_ID `
+            -MonthlyCheckoutUrl $env:YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL `
+            -YearlyCheckoutUrl $env:YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL `
+            -ManageUrl $env:YOREBOT_GUMROAD_MANAGE_URL `
+            -Repository $env:GITHUB_REPOSITORY `
+            -CheckRemoteAbsence
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -168,6 +204,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
+          function Assert-BytesContain {
+            param(
+              [Parameter(Mandatory)] [string] $BinaryText,
+              [Parameter(Mandatory)] [string] $Value,
+              [Parameter(Mandatory)] [string] $Name
+            )
+            [byte[]] $needle = [System.Text.Encoding]::UTF8.GetBytes($Value)
+            $needleText = [System.Text.Encoding]::Latin1.GetString($needle)
+            if ($BinaryText.IndexOf($needleText, [System.StringComparison]::Ordinal) -lt 0) {
+              throw "Release app omitted required public build value: $Name"
+            }
+          }
           yarn tauri build --no-bundle --ci
           $cargoManifest = Get-Content 'src-tauri/Cargo.toml' -Raw
           $defaultRun = [regex]::Match($cargoManifest, '(?m)^default-run\s*=\s*"([^"]+)"\s*$')
@@ -177,6 +225,20 @@ jobs:
           )
           if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
             throw "Release app executable is missing: $appPath"
+          }
+          $binaryText = [System.Text.Encoding]::Latin1.GetString(
+            [System.IO.File]::ReadAllBytes($appPath)
+          )
+          foreach ($name in @(
+            'YOREBOT_GUMROAD_PRODUCT_ID',
+            'YOREBOT_GUMROAD_MONTHLY_CHECKOUT_URL',
+            'YOREBOT_GUMROAD_YEARLY_CHECKOUT_URL',
+            'YOREBOT_GUMROAD_MANAGE_URL'
+          )) {
+            Assert-BytesContain `
+              -BinaryText $binaryText `
+              -Value ([Environment]::GetEnvironmentVariable($name)) `
+              -Name $name
           }
           "YOREBOT_APP_EXE=$appPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -230,6 +292,14 @@ jobs:
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)"
           }
+          $appVersion = [string](Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          if ($env:YOREBOT_DRAFT_TAG -cne "yorebot-v$appVersion") {
+            throw 'Draft tag no longer matches the exact app version'
+          }
+          $expectedInstallerName = "YoreBot_${appVersion}_x64-setup.exe"
+          if ($installers[0].Name -cne $expectedInstallerName) {
+            throw "Unexpected NSIS installer name: $($installers[0].Name)"
+          }
           $installerPath = [System.IO.Path]::GetFullPath($installers[0].FullName)
           "YOREBOT_INSTALLER_EXE=$installerPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -281,3 +351,329 @@ jobs:
             -InstallerPath $env:YOREBOT_INSTALLER_EXE `
             -WorkRoot $workRoot `
             -ExpectedSignerSubject $env:YOREBOT_WINDOWS_SIGNER_SUBJECT
+
+      - name: Create and verify unpublished signed draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Set-StrictMode -Version Latest
+
+          function Invoke-GitHubRequest {
+            param(
+              [Parameter(Mandatory)] [string] $Uri,
+              [ValidateSet('GET', 'POST', 'DELETE')] [string] $Method = 'GET',
+              [string] $InFile,
+              [string] $ContentType
+            )
+            $request = @{
+              Uri = $Uri
+              Method = $Method
+              Headers = @{
+                Accept = 'application/vnd.github+json'
+                Authorization = "Bearer $env:GH_TOKEN"
+                'X-GitHub-Api-Version' = '2022-11-28'
+              }
+              SkipHttpErrorCheck = $true
+              TimeoutSec = 600
+            }
+            if (-not [string]::IsNullOrEmpty($InFile)) { $request.InFile = $InFile }
+            if (-not [string]::IsNullOrEmpty($ContentType)) { $request.ContentType = $ContentType }
+            $response = Invoke-WebRequest @request
+            return $response
+          }
+
+          function Convert-GitHubJson {
+            param(
+              [Parameter(Mandatory)] $Response,
+              [Parameter(Mandatory)] [int] $ExpectedStatus
+            )
+            if ([int]$Response.StatusCode -ne $ExpectedStatus) {
+              throw "GitHub API returned HTTP $([int]$Response.StatusCode), expected $ExpectedStatus"
+            }
+            if ([string]::IsNullOrWhiteSpace($Response.Content) -or $Response.Content.Length -gt 1048576) {
+              throw 'GitHub API returned an invalid bounded JSON response'
+            }
+            return $Response.Content | ConvertFrom-Json
+          }
+
+          function Write-JsonFile {
+            param(
+              [Parameter(Mandatory)] [string] $Path,
+              [Parameter(Mandatory)] [hashtable] $Value
+            )
+            [System.IO.File]::WriteAllText(
+              $Path,
+              ($Value | ConvertTo-Json -Compress),
+              [System.Text.UTF8Encoding]::new($false)
+            )
+          }
+
+          $tag = $env:YOREBOT_DRAFT_TAG
+          $encodedTag = [uri]::EscapeDataString($tag)
+          $repositoryApi = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $tagStatus = [int](Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag").StatusCode
+          $releaseStatus = [int](Invoke-GitHubRequest -Uri "$repositoryApi/releases/tags/$encodedTag").StatusCode
+          if ($tagStatus -eq 200) { throw 'Refusing to overwrite an existing tag' }
+          if ($tagStatus -ne 404) { throw "Unable to prove tag absence (HTTP $tagStatus)" }
+          if ($releaseStatus -eq 200) { throw 'Refusing to overwrite an existing release' }
+          if ($releaseStatus -ne 404) { throw "Unable to prove release absence (HTTP $releaseStatus)" }
+
+          $installer = Get-Item -LiteralPath $env:YOREBOT_INSTALLER_EXE
+          $appVersion = [string](Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          $expectedInstallerName = "YoreBot_${appVersion}_x64-setup.exe"
+          if ($installer.Name -cne $expectedInstallerName) {
+            throw "Unexpected signed installer name: $($installer.Name)"
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($signature.Status -ne 'Valid' -or
+              $null -eq $signature.SignerCertificate -or
+              $signature.SignerCertificate.Subject -cne $env:YOREBOT_WINDOWS_SIGNER_SUBJECT -or
+              $null -eq $signature.TimeStamperCertificate) {
+            throw 'Signed installer failed final Authenticode verification'
+          }
+
+          $installerHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($installerHash -notmatch '^[0-9a-f]{64}$') {
+            throw 'Signed installer SHA-256 is invalid'
+          }
+          $checksumName = "$($installer.Name).sha256"
+          $checksumPath = Join-Path $env:RUNNER_TEMP $checksumName
+          $checksumLine = "$installerHash  $($installer.Name)`n"
+          [System.IO.File]::WriteAllText(
+            $checksumPath,
+            $checksumLine,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          if ([System.IO.File]::ReadAllText($checksumPath) -cne $checksumLine) {
+            throw 'SHA-256 evidence file changed during creation'
+          }
+
+          $checksumHash = (Get-FileHash -LiteralPath $checksumPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $draftMarker = "<!-- YOREBOT_DRAFT_OWNER run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT sha=$env:GITHUB_SHA -->"
+          $releaseName = "YoreBot $appVersion for Windows"
+          $releaseBody = "Private local Chat and a Downloads task that asks before changing files.`n`nVerify the installer with the attached SHA-256 checksum.`n`n$draftMarker"
+          $tagCreationAttempted = $false
+          $tagCreatedByRun = $false
+          $releaseCreationAttempted = $false
+          $recordedReleaseId = $null
+          try {
+            $tagPayload = Join-Path $env:RUNNER_TEMP 'yorebot-draft-tag.json'
+            Write-JsonFile -Path $tagPayload -Value @{
+              ref = "refs/tags/$tag"
+              sha = $env:GITHUB_SHA
+            }
+            $tagCreationAttempted = $true
+            $createdTagRef = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest `
+                -Uri "$repositoryApi/git/refs" `
+                -Method POST `
+                -InFile $tagPayload `
+                -ContentType 'application/json') `
+              -ExpectedStatus 201
+            if ($createdTagRef.ref -cne "refs/tags/$tag" -or
+                $createdTagRef.object.type -cne 'commit' -or
+                $createdTagRef.object.sha -cne $env:GITHUB_SHA) {
+              throw 'Created tag ref did not match the exact workflow commit'
+            }
+            $tagCreatedByRun = $true
+
+            $releasePayload = Join-Path $env:RUNNER_TEMP 'yorebot-draft-release.json'
+            Write-JsonFile -Path $releasePayload -Value @{
+              tag_name = $tag
+              name = $releaseName
+              body = $releaseBody
+              draft = $true
+              prerelease = $false
+              make_latest = 'false'
+            }
+            $releaseCreationAttempted = $true
+            $release = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest `
+                -Uri "$repositoryApi/releases" `
+                -Method POST `
+                -InFile $releasePayload `
+                -ContentType 'application/json') `
+              -ExpectedStatus 201
+            $createdReleaseId = [long]$release.id
+            if ($createdReleaseId -le 0) {
+              throw 'Created release did not return a valid id'
+            }
+            $recordedReleaseId = $createdReleaseId
+            if ($release.tag_name -cne $tag -or
+                $release.draft -ne $true -or
+                $release.prerelease -ne $false -or
+                $release.name -cne $releaseName -or
+                $release.body -cne $releaseBody) {
+              throw 'Created release is not the exact unpublished draft requested'
+            }
+
+            $tagRef = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag") `
+              -ExpectedStatus 200
+            if ($tagRef.ref -cne "refs/tags/$tag" -or
+                $tagRef.object.type -cne 'commit' -or
+                $tagRef.object.sha -cne $env:GITHUB_SHA) {
+              throw 'Created tag does not target the exact workflow commit'
+            }
+            $uploadBase = (& ./scripts/validate-windows-draft-release.ps1 `
+              -ValidateUploadTemplateOnly `
+              -Repository $env:GITHUB_REPOSITORY `
+              -ReleaseId $createdReleaseId `
+              -UploadTemplate ([string]$release.upload_url)
+            ).Trim()
+
+            $uploaded = @()
+            foreach ($asset in @(
+              @{ Path = $installer.FullName; Name = $installer.Name },
+              @{ Path = $checksumPath; Name = $checksumName }
+            )) {
+              $assetName = [uri]::EscapeDataString([string]$asset.Name)
+              $uploaded += Convert-GitHubJson `
+                -Response (Invoke-GitHubRequest `
+                  -Uri "${uploadBase}?name=$assetName" `
+                  -Method POST `
+                  -InFile ([string]$asset.Path) `
+                  -ContentType 'application/octet-stream') `
+                -ExpectedStatus 201
+            }
+            if ($uploaded.Count -ne 2) {
+              throw "Expected two uploaded assets, found $($uploaded.Count)"
+            }
+
+            $verified = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest -Uri "$repositoryApi/releases/$createdReleaseId") `
+              -ExpectedStatus 200
+            if ($verified.draft -ne $true -or
+                $verified.prerelease -ne $false -or
+                $verified.tag_name -cne $tag -or
+                $null -ne $verified.published_at -or
+                $verified.name -cne $releaseName -or
+                $verified.body -cne $releaseBody) {
+              throw 'Draft release state changed after asset upload'
+            }
+            $assets = @($verified.assets)
+            if ($assets.Count -ne 2) {
+              throw "Draft release assets.Count -ne 2 (actual $($assets.Count))"
+            }
+            $expectedAssets = [System.Collections.Generic.Dictionary[string, object]]::new(
+              [System.StringComparer]::Ordinal
+            )
+            $expectedAssets.Add($installer.Name, @{
+              Size = [long]$installer.Length
+              Digest = "sha256:$installerHash"
+            })
+            $expectedAssets.Add($checksumName, @{
+              Size = [long](Get-Item -LiteralPath $checksumPath).Length
+              Digest = "sha256:$checksumHash"
+            })
+            foreach ($asset in $assets) {
+              if (-not $expectedAssets.ContainsKey([string]$asset.name)) {
+                throw "Unexpected draft asset: $($asset.name)"
+              }
+              $expectedAsset = $expectedAssets[[string]$asset.name]
+              if ([long]$asset.size -ne $expectedAsset.Size -or
+                  [string]$asset.digest -cne $expectedAsset.Digest) {
+                throw "Draft asset size or digest mismatch: $($asset.name)"
+              }
+              $expectedUrl = "$env:YOREBOT_RELEASE_BASE_URL/$tag/$($asset.name)"
+              if ([string]$asset.browser_download_url -cne $expectedUrl) {
+                throw "Unexpected draft asset browser_download_url for $($asset.name)"
+              }
+              [void]$expectedAssets.Remove([string]$asset.name)
+            }
+            if ($expectedAssets.Count -ne 0) {
+              throw 'A required draft asset is missing'
+            }
+            $finalTagRef = Convert-GitHubJson `
+              -Response (Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag") `
+              -ExpectedStatus 200
+            if ($finalTagRef.ref -cne "refs/tags/$tag" -or
+                $finalTagRef.object.type -cne 'commit' -or
+                $finalTagRef.object.sha -cne $env:GITHUB_SHA) {
+              throw 'Draft tag changed during asset staging'
+            }
+            Write-Host "Unpublished signed Windows draft verified: tag=$tag assets=2 sha256=$installerHash"
+          } catch {
+            $failure = $_
+            $cleanupFailures = [System.Collections.Generic.List[string]]::new()
+            if ($tagCreationAttempted -or $releaseCreationAttempted) {
+              $releaseProbe = $null
+              $tagProbe = $null
+              try {
+                $releaseProbe = Invoke-GitHubRequest -Uri "$repositoryApi/releases/tags/$encodedTag"
+              } catch {
+                $cleanupFailures.Add('release ownership probe transport')
+              }
+              try {
+                $tagProbe = Invoke-GitHubRequest -Uri "$repositoryApi/git/ref/tags/$encodedTag"
+              } catch {
+                $cleanupFailures.Add('tag ownership probe transport')
+              }
+
+              $releaseStateSafeForTagCleanup = $false
+              if ($null -ne $releaseProbe -and [int]$releaseProbe.StatusCode -eq 200) {
+                try {
+                  $ownedRelease = Convert-GitHubJson -Response $releaseProbe -ExpectedStatus 200
+                  if ([long]$ownedRelease.id -le 0 -or
+                      ($null -ne $recordedReleaseId -and [long]$ownedRelease.id -ne $recordedReleaseId) -or
+                      $ownedRelease.draft -ne $true -or
+                      $ownedRelease.tag_name -cne $tag -or
+                      $ownedRelease.name -cne $releaseName -or
+                      $ownedRelease.body -cne $releaseBody) {
+                    throw 'Exact draft ownership marker or target did not match'
+                  }
+                  $deleteRelease = Invoke-GitHubRequest `
+                    -Uri "$repositoryApi/releases/$([long]$ownedRelease.id)" `
+                    -Method DELETE
+                  if ([int]$deleteRelease.StatusCode -ne 204) {
+                    throw "Exact draft release cleanup returned HTTP $([int]$deleteRelease.StatusCode)"
+                  }
+                  $releaseStateSafeForTagCleanup = $true
+                } catch {
+                  $cleanupFailures.Add('exact marker-owned draft release')
+                }
+              } elseif ($null -ne $releaseProbe -and [int]$releaseProbe.StatusCode -eq 404) {
+                $releaseStateSafeForTagCleanup = $true
+              } elseif ($null -ne $releaseProbe) {
+                $cleanupFailures.Add("release ownership probe HTTP $([int]$releaseProbe.StatusCode)")
+              }
+
+              if ($null -ne $tagProbe -and
+                  $tagCreatedByRun -and
+                  $releaseStateSafeForTagCleanup) {
+                if ([int]$tagProbe.StatusCode -eq 200) {
+                  try {
+                    $ownedTag = Convert-GitHubJson -Response $tagProbe -ExpectedStatus 200
+                    if ($ownedTag.ref -cne "refs/tags/$tag" -or
+                        $ownedTag.object.type -cne 'commit' -or
+                        $ownedTag.object.sha -cne $env:GITHUB_SHA) {
+                      throw 'Exact created tag target did not match'
+                    }
+                    $deleteTag = Invoke-GitHubRequest `
+                      -Uri "$repositoryApi/git/refs/tags/$encodedTag" `
+                      -Method DELETE
+                    if ([int]$deleteTag.StatusCode -ne 204) {
+                      throw "Exact created tag cleanup returned HTTP $([int]$deleteTag.StatusCode)"
+                    }
+                  } catch {
+                    $cleanupFailures.Add('exact run-owned tag')
+                  }
+                } elseif ([int]$tagProbe.StatusCode -ne 404) {
+                  $cleanupFailures.Add("tag ownership probe HTTP $([int]$tagProbe.StatusCode)")
+                }
+              } elseif ($null -ne $tagProbe -and $tagCreatedByRun) {
+                $cleanupFailures.Add('run-owned tag retained because release state was ambiguous')
+              } elseif ($null -ne $tagProbe -and
+                        $tagCreationAttempted -and
+                        [int]$tagProbe.StatusCode -ne 404) {
+                $cleanupFailures.Add('tag creation response did not prove ownership')
+              }
+            }
+            if ($cleanupFailures.Count -gt 0) {
+              throw "Draft release failed and cleanup was incomplete: $($cleanupFailures -join ', ')"
+            }
+            throw $failure
+          }
